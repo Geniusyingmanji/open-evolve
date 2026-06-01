@@ -429,10 +429,10 @@ evidence batch -> propose patch -> isolated trial image -> replay selected tasks
 | Memory | ✅ | verified memory store，支持按 task family 查询 |
 | Local command adapter | ✅ | 写候选文件、跑本地 evaluator command、读 `score.json` |
 | Model clients | ✅ | `AzureOpenAIResponsesClient` 支持本地 managed-identity bearer token 调 GPT-5.5 Responses API |
-| CLI | ✅ | `run-toy`、`eval-local` 和 `test-azure` |
+| CLI | ✅ | `run-toy`、`eval-local`、`test-azure`、`eval-frontier`、`run-frontier`、`eval-ale`、`run-ale` |
 | Harness ablation | ✅ | `HarnessAblationRunner` 支持固定回调下比较多个 `HarnessSpec`，并可输出 JSON/Markdown |
 | Examples | ✅ | toy numeric、`examples/local_command`、`examples/benchmark_smoke` |
-| Tests | ✅ | `unittest` 覆盖 core/harness/local-command/search/memory |
+| Tests | ✅ | `unittest` 覆盖 core/harness/local-command/search/memory/operator/LLM parse |
 
 当前验证命令：
 
@@ -443,6 +443,10 @@ PYTHONPATH=src python3 -m open_evolve.cli eval-local --task-config examples/loca
 PYTHONPATH=src python3 examples/local_command/run_search.py
 PYTHONPATH=src python3 -m open_evolve.cli test-azure --prompt 'Return exactly: OPEN_EVOLVE_OK'
 PYTHONPATH=src python3 examples/benchmark_smoke/run_three_benchmarks.py --workspace .open_evolve/benchmark_smoke
+PYTHONPATH=src python3 -m open_evolve.cli eval-frontier --benchmark WirelessChannelSimulation/HighReliableSimulation
+PYTHONPATH=src python3 -m open_evolve.cli run-frontier --benchmark WirelessChannelSimulation/HighReliableSimulation --workspace .open_evolve/frontier_smoke --iterations 3 --max-evaluations 4 --llm-timeout-seconds 120 --llm-retries 1
+PYTHONPATH=src python3 -m open_evolve.cli run-ale --problem ahc039 --lite --operator numeric --iterations 3 --max-evaluations 7 --samples 2
+PYTHONPATH=src python3 -m open_evolve.cli eval-ale --problem ahc039 --lite --split private
 ```
 
 本地 Azure 免 key GPT-5.5 调用方式已实测通过：
@@ -468,18 +472,16 @@ auth: managed-identity bearer token from environment, no API key
 | Benchmark | 本地路径 | 当前状态 |
 |-----------|----------|----------|
 | MLE-bench | `/data/zyf/benchmarks/mle-bench` | repo 和 Python env 已安装；`mlebench prepare -c detecting-insults-in-social-commentary` 被 Kaggle credentials 阻塞 |
-| ALE-Bench | `/data/zyf/benchmarks/ALE-Bench` | `ahc039` lite/debug public+private eval 跑通，150 个 private cases 全部 `ACCEPTED` |
-| Frontier-Eng | `/data/zyf/benchmarks/Frontier-Engineering` | 官方 smoke 跑通；`WirelessChannelSimulation/HighReliableSimulation` baseline-only 真实任务跑通 |
+| ALE-Bench | `/data/zyf/benchmarks/ALE-Bench` | `ALEBenchAdapter` 已接入；`ahc039` public-search 3 轮/7 eval 正常，private final 150/150 `ACCEPTED` |
+| Frontier-Eng | `/data/zyf/benchmarks/Frontier-Engineering` | `FrontierEngineeringAdapter` 已接入；`WirelessChannelSimulation/HighReliableSimulation` GPT-5.5 3 轮/4 eval 正常，best `combined_score≈197.71` |
 
-下一步需要把 proxy task 的 evaluator 替换为这些官方 runner wrapper。
+proxy task 仍保留为 CI smoke；真实证据以后以官方 runner wrapper 为准。
 
 下一批实现建议：
 
-1. **ALEBenchAdapter**：封装 `ale_bench.start()`、`public_eval()`、`private_eval()`，先固定 `ahc039`，支持 C++/Python candidate artifact。
-2. **FrontierEngAdapter**：封装 `python -m frontier_eval task=unified task.benchmark=... algorithm.iterations=0`，先固定 `WirelessChannelSimulation/HighReliableSimulation`。
-3. **MLEBenchAdapter**：等 Kaggle credentials 配好后，先接 `detecting-insults-in-social-commentary` 或另一个低复杂度小数据任务。
-4. **Benchmark-specific operators**：MLE 的 pipeline/hyperparam mutation，ALE 的 heuristic/code mutation，Frontier 的 constrained design/code mutation。
-5. **LLM operator loop**：把 `AzureOpenAIResponsesClient` 接进 `OperatorLibrary`，从单次候选生成升级为多轮 propose-evaluate-repair。
-6. **Proxy/full cascade**：每个 task config 增加 `smoke -> proxy -> full` 分层评估，记录 fidelity。
-7. **Process evaluator v2**：用 task-level successful traces 构建更接近 AgentLens 的过程参考。
-8. **Campaign runner**：批量加载 task configs，执行 search/harness ablation 并产出统一 report。
+1. **Campaign runner**：批量加载真实 task configs，执行 search/harness ablation 并产出统一 report。
+2. **MLEBenchAdapter**：等 Kaggle credentials 配好后，先接 `detecting-insults-in-social-commentary` 或另一个低复杂度小数据任务。
+3. **ALE LLM repair loop**：当前 GPT-5.5 对极简 baseline 容易返回重复候选；需要 prompt/schema 记录 raw response，并引入 problem-specific generator。
+4. **Frontier full campaign**：在 `WirelessChannelSimulation/HighReliableSimulation` 上扩大到 20-50 eval，并加入 archive search 和 replay。
+5. **Proxy/full cascade**：每个 task config 增加 `smoke -> proxy -> full` 分层评估，记录 fidelity。
+6. **Process evaluator v2**：用 task-level successful traces 构建更接近 AgentLens 的过程参考。

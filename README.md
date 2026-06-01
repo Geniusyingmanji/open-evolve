@@ -209,16 +209,31 @@ The current local provider shape is:
 
 `AzureOpenAIResponsesClient` intentionally does not print or persist tokens. It reads `AZURE_OPENAI_AD_TOKEN` by default, with `AZURE_OPENAI_AUTHORIZATION` as a fallback.
 
-## Immediate Next Steps
+## Real Benchmark Adapters
 
-1. Implement real `ALEBenchAdapter` around `ale_bench.start/public_eval/private_eval`, starting from `ahc039`.
-2. Implement real `FrontierEngAdapter` around `python -m frontier_eval task=unified ...`, starting from `WirelessChannelSimulation/HighReliableSimulation`.
-3. Configure Kaggle credentials before attempting real `MLEBenchAdapter` prepare/grade runs.
-4. Keep proxy smoke tasks as fast CI checks, but do not use them as benchmark evidence.
-5. Implement `MLEBenchAdapter` for a tiny selected/lite task once data is available.
-6. Add benchmark-specific operators:
-   - MLE: feature/model/hyperparameter/pipeline mutation
-   - ALE: local-search heuristic/code mutation
-   - Frontier-Eng: parameter/code mixed mutation with constraint feedback
-7. Expand `ProcessEvaluator` from heuristic counts to stage labels: exploration, implementation, verification, orchestration.
-8. Add first harness ablation: shell-only vs benchmark-specific tools under fixed model/task/budget.
+Current real adapters:
+
+- `FrontierEngineeringAdapter`: wraps Frontier-Engineering unified metadata and evaluator, starting from `WirelessChannelSimulation/HighReliableSimulation`.
+- `ALEBenchAdapter`: wraps `ale_bench.start()`, `public_eval()`, and `private_eval()` for `ahc039` lite/debug.
+
+Useful commands:
+
+```bash
+PYTHONPATH=src python3 -m open_evolve.cli eval-frontier \
+  --benchmark WirelessChannelSimulation/HighReliableSimulation
+
+PYTHONPATH=src python3 -m open_evolve.cli run-frontier \
+  --benchmark WirelessChannelSimulation/HighReliableSimulation \
+  --workspace .open_evolve/frontier_smoke \
+  --iterations 3 --max-evaluations 4 \
+  --llm-timeout-seconds 120 --llm-retries 1
+
+PYTHONPATH=src python3 -m open_evolve.cli run-ale \
+  --problem ahc039 --lite \
+  --operator numeric --iterations 3 --max-evaluations 7 --samples 2
+
+PYTHONPATH=src python3 -m open_evolve.cli eval-ale \
+  --problem ahc039 --lite --split private
+```
+
+MLE-bench remains blocked on Kaggle credentials for official data preparation.

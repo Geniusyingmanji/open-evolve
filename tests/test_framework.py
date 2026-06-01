@@ -8,8 +8,15 @@ from open_evolve.benchmarks.toy_numeric import ToyNumericBenchmark
 from open_evolve.core.artifact_store import FileArtifactStore
 from open_evolve.core.archive import CandidateArchive
 from open_evolve.core.feedback_compute import estimate_effective_feedback_compute
+from open_evolve.core.llm_operators import AzureCodeEditOperator
 from open_evolve.core.memory import VerifiedMemoryStore
-from open_evolve.core.operators import FileAppendOperator, FileStringReplaceOperator, JsonFieldStepOperator, OperatorLibrary
+from open_evolve.core.operators import (
+    FileAppendOperator,
+    FileStringReplaceOperator,
+    JsonFieldStepOperator,
+    OperatorLibrary,
+    RegexNumberJitterOperator,
+)
 from open_evolve.core.process_evaluator import evaluate_process_quality
 from open_evolve.core.search_controller import ArchiveSearchController, GreedySearchController, SearchConfig
 from open_evolve.core.trace_recorder import TraceRecorder
@@ -21,6 +28,7 @@ from open_evolve.harness.registry import HarnessRegistry
 from open_evolve.experiments.harness_ablation import HarnessAblationRunner
 from open_evolve.experiments.reporting import write_ablation_json, write_ablation_markdown
 from open_evolve.models.azure_openai import AzureOpenAIConfig, AzureOpenAIResponsesClient
+from open_evolve.benchmarks._subprocess_json import extract_prefixed_json
 
 
 class FrameworkTests(unittest.TestCase):
@@ -133,6 +141,14 @@ class FrameworkTests(unittest.TestCase):
         self.assertEqual(replace_draft.artifact["files"]["a.py"], "x = 2\n")
         self.assertTrue(append_draft.artifact["files"]["a.py"].endswith("print(x)\n"))
 
+    def test_regex_number_jitter_operator(self):
+        task = Task(id="code", family="local", objective="", initial_artifact={"code": "cout << 15000 << 25000;\n"})
+        parent = Candidate.from_draft(task, CandidateDraft(artifact=task.initial_artifact))
+        op = RegexNumberJitterOperator(samples=2, changes_per_sample=1, jitter=10, min_abs_value=1000)
+        drafts = op.propose(task, parent, __import__("random").Random(0))
+        self.assertEqual(len(drafts), 2)
+        self.assertNotEqual(drafts[0].artifact["code"], task.initial_artifact["code"])
+
     def test_harness_ablation_runner(self):
         spec = HarnessSpec.default("toy")
 
@@ -219,6 +235,21 @@ class FrameworkTests(unittest.TestCase):
         self.assertEqual(client.token(), "local-token")
         response = {"output": [{"content": [{"text": "OPEN_"}, {"text": "EVOLVE_OK"}]}]}
         self.assertEqual(client.extract_text(response), "OPEN_EVOLVE_OK")
+
+    def test_llm_code_edit_response_parsing(self):
+        plan, code = AzureCodeEditOperator._parse_response(
+            '```json\n{"plan": "try faster loop", "code": "int main(){return 0;}"}\n```'
+        )
+        self.assertEqual(plan, "try faster loop")
+        self.assertEqual(code, "int main(){return 0;}")
+
+        plan, code = AzureCodeEditOperator._parse_response("```cpp\nint main(){return 1;}\n```")
+        self.assertIn("fenced", plan)
+        self.assertEqual(code, "int main(){return 1;}")
+
+    def test_prefixed_json_extraction(self):
+        parsed = extract_prefixed_json('noise\nOPEN_EVOLVE_X {"a": 1}\n', "OPEN_EVOLVE_X ")
+        self.assertEqual(parsed, {"a": 1})
 
 
 if __name__ == "__main__":

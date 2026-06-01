@@ -156,6 +156,89 @@ Result:
 
 ## Immediate Implications
 
-1. ALE-Bench and Frontier-Eng are ready to wrap with real adapters.
-2. MLE-bench needs Kaggle credentials before official prepare/grade can run.
-3. For Frontier-Eng, start with CPU/self-contained tasks before full `v1` validation because some tasks need Octave, Docker, CUDA, or external assets.
+## Open Evolve Adapter Runs
+
+These runs use the framework adapters in `src/open_evolve/benchmarks`, not direct one-off scripts.
+
+### Frontier-Engineering adapter
+
+Baseline adapter eval:
+
+```bash
+PYTHONPATH=src python3 -m open_evolve.cli eval-frontier \
+  --benchmark WirelessChannelSimulation/HighReliableSimulation
+```
+
+Result: `valid=1.0`, `combined_score=151.69891010244862`, `runtime_s=16.0193`.
+
+GPT-5.5 1-iteration smoke:
+
+```bash
+PYTHONPATH=src python3 -m open_evolve.cli run-frontier \
+  --benchmark WirelessChannelSimulation/HighReliableSimulation \
+  --workspace .open_evolve/frontier_smoke \
+  --run-id frontier_smoke_gpt55_1iter_sourceonly \
+  --iterations 1 --max-evaluations 2 \
+  --max-output-tokens 7000 --llm-timeout-seconds 120 --llm-retries 1
+```
+
+Result: 2 evaluations, best `valid=1.0`, best `combined_score=195.39841489926056`.
+
+GPT-5.5 3-iteration smoke:
+
+```bash
+PYTHONPATH=src python3 -m open_evolve.cli run-frontier \
+  --benchmark WirelessChannelSimulation/HighReliableSimulation \
+  --workspace .open_evolve/frontier_smoke \
+  --run-id frontier_smoke_gpt55_3iter_sourceonly \
+  --iterations 3 --max-evaluations 4 \
+  --max-output-tokens 7000 --llm-timeout-seconds 120 --llm-retries 1
+```
+
+Result: 4 evaluations, 3 iterations, best `valid=1.0`, best `combined_score=197.71118522053231`.
+
+Implementation note: the first JSON-wrapped LLM operator shape timed out for full-file generation. The operator now asks for complete source directly, uses shorter context, and treats LLM timeouts as no-draft events instead of crashing the controller.
+
+### ALE-Bench adapter
+
+Adapter public eval:
+
+```bash
+PYTHONPATH=src python3 -m open_evolve.cli eval-ale \
+  --problem ahc039 --lite --split public \
+  --code-language cpp20 --judge-version 202301
+```
+
+Result: 5/5 public cases `ACCEPTED`, public absolute score `1739`.
+
+Public-search numeric 3-iteration smoke:
+
+```bash
+PYTHONPATH=src python3 -m open_evolve.cli run-ale \
+  --problem ahc039 --lite \
+  --workspace .open_evolve/ale_smoke \
+  --run-id ale_ahc039_numeric_3iter_public \
+  --iterations 3 --max-evaluations 7 --samples 2 \
+  --operator numeric --numeric-jitter 7000 --numeric-changes 2 \
+  --code-language cpp20 --judge-version 202301
+```
+
+Result: 7 public evaluations, 3 iterations, best public score stayed at `1739`. The adapter/search loop is stable, but naive coordinate jitter did not improve the baseline.
+
+Private final eval of the selected best:
+
+```bash
+PYTHONPATH=src python3 -m open_evolve.cli eval-ale \
+  --problem ahc039 --lite --split private \
+  --code-language cpp20 --judge-version 202301
+```
+
+Result: 150/150 private cases `ACCEPTED`, private absolute score `56814`, estimated rank `531`, estimated performance `973`.
+
+## Immediate Implications
+
+1. ALE-Bench and Frontier-Eng are now wrapped by real framework adapters and can run through the same search/evaluation/store path.
+2. Frontier GPT-5.5 full-file evolution is viable on the selected CPU task; a larger 20-50 eval campaign is the next useful quality signal.
+3. ALE-Bench needs a stronger task-specific generator/repair loop. The adapter is stable, but naive numeric jitter and the first LLM prompt do not yet improve `ahc039`.
+4. MLE-bench needs Kaggle credentials before official prepare/grade can run.
+5. For Frontier-Eng, start with CPU/self-contained tasks before full `v1` validation because some tasks need Octave, Docker, CUDA, or external assets.
