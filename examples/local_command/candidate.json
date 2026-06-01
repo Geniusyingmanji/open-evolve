@@ -1,0 +1,9 @@
+{
+  "artifact": {
+    "files": {
+      "solution.json": "{\"x\": 5}"
+    }
+  },
+  "operator_id": "manual",
+  "plan": "Set x to the target."
+}

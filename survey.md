@@ -235,3 +235,144 @@ Layer 4: 代码级自修改（可选，高风险）
 | 经验驱动 | Reflexion (NeurIPS 2023), EvolveR (2510.16079), Symbolic Learning (2406.18532) |
 | 安全 | Your Agent May Misevolve (2509.26354) |
 | GitHub | github.com/XMUDeepLIT/Awesome-Self-Evolving-Agents |
+
+---
+
+## 五、近期补充文献与设计启发
+
+这一部分重点补充和 Frontier-Eng / MLE-bench / ALE-Bench 直接相关的 2025-2026 年工作。结论先行：当前最有效的路线不是单纯堆模型，而是把开放性优化问题形式化为 **可验证候选解空间 + 搜索策略 + 操作符集合 + 经验记忆 + 成本感知评估**。
+
+### 5.1 MLE-bench 与 AI Research Agent
+
+| 工作 | 关键机制 | 对本项目的启发 |
+|------|----------|----------------|
+| **AIDE: AI-Driven Exploration in the Space of Code** (2502.13138) | 将 ML 工程建模为代码空间树搜索，复用并精炼高分解 | MLE-bench 的最小可行 baseline 应该是 tree-search/code-reuse，而不是单轮 AutoML |
+| **AI Research Agents for Machine Learning: Search, Exploration, and Generalization in MLE-bench** (2507.02554) | 明确拆分 search policy 与 operator set，对 Greedy / MCTS / Evolutionary 做系统比较 | 需要把“搜索策略”和“候选修改操作符”解耦，做可替换 ablation |
+| **What Does It Take to Be a Good AI Research Agent? Ideation Diversity** (2511.15593) | MLE-bench 轨迹分析显示更高 ideation diversity 与更好成绩相关 | 不应只做单链贪心；需要保留受控多样性、避免早熟收敛 |
+| **KompeteAI** (2508.10177) | RAG 引入 Kaggle/arXiv 思路，合并 top candidates，用 early metrics 和调试加速减少完整训练 | MLE 任务要有 proxy score、candidate merge 和外部方案检索 |
+| **ArchPilot** (2511.03985) | 多智能体：编排、生成、代理评估，使用 proxy training 与 fidelity-aware score | 昂贵评估必须分层：lint/debug -> 小样本训练 -> 全量训练 -> 提交/最终评估 |
+| **KAPSO** (2601.21526) | git-native 实验引擎 + 知识系统 + episodic memory，评测 MLE-bench/ALE-Bench | 候选解必须是可复现分支/patch，不只是聊天历史 |
+| **FM Agent** (2510.26144) | 多智能体 + 大规模进化搜索，覆盖 OR、MLE、GPU kernel、数学 | 统一框架应支持分布式异步评估和跨 benchmark 的 evaluator adapter |
+
+### 5.2 开放式代码/算法进化框架
+
+| 工作 | 关键机制 | 对本项目的启发 |
+|------|----------|----------------|
+| **AlphaEvolve** (2506.13131) | LLM 直接修改代码，持续接收 evaluator feedback；在数学、调度、硬件/训练基础设施上产生改进 | 核心抽象应是“可执行 artifact + 严格 evaluator”，而不是 agent 对话本身 |
+| **OpenEvolve** | MAP-Elites / island-style LLM program evolution，已被用于数学、prompt evolution、工程优化等任务 | 可作为 evolution baseline 和部分搜索后端，但需要补上 benchmark adapter、memory、proxy eval |
+| **ShinkaEvolve** (2509.19349) | 父代采样平衡探索/利用、代码 novelty rejection、bandit LLM ensemble | 需要 novelty gate 和模型路由，减少重复样本与高价模型浪费 |
+| **CodeEvolve** (2510.14150; 2605.04677) | CVT-MAP-Elites、inspiration crossover、meta-prompting、depth refinement；另有 runtime-guided target selection + MCTS | 对 Frontier-Eng/GPU/系统优化任务，应结合 profiler 找热点，再局部演化 |
+| **LEVI** (2605.09764) | 更强 search architecture 替代更大 LLM：多样性数据库、mutation router、proxy benchmark | 预算有限时，优先优化搜索/评估架构，再扩大模型 |
+| **EvoX** (2602.23413) | 同时进化候选解与搜索策略，动态调整 prior solution selection / variation | 第二阶段应加入 meta-controller，按任务进展自动调 operator 权重 |
+| **LoongFlow** (2512.24077) | Plan-Execute-Summarize + hybrid evolutionary memory + MAP-Elites/多岛 | 每次候选生成要产出 plan 和总结，成为可检索的 evolution trace |
+| **DeepEvolve** (2510.06056) | deep research + code evolution + systematic debugging，避免纯内部知识 plateau | 对专业工程任务需要 literature/RAG agent，但每个 idea 必须落到可执行 patch |
+| **ImprovEvolve** (2602.10233) | 将候选程序参数化为 propose / improve / perturb 接口，降低 LLM 认知负担 | 对组合优化/物理优化可要求 candidate 暴露局部搜索接口，而不是一次性生成完整解 |
+
+### 5.3 反思、记忆、技能与安全评估
+
+| 工作 | 关键机制 | 对本项目的启发 |
+|------|----------|----------------|
+| **GEPA** (2507.19457) | 通过轨迹反思和 Pareto frontier 做 prompt evolution，少量 rollout 即可改进 | 可用于优化 agent prompts / operator prompts；但不能替代真实 evaluator |
+| **TextGrad** (2406.07496) | 将 LLM 反馈作为文本梯度，优化复合 AI 系统的文本/代码变量 | 可作为 prompt/operator/skill 的低成本内环优化器 |
+| **SkillOpt** (2605.23904) | 把 skill 文档作为 frozen agent 的外部状态训练，只有 held-out 提升才接受编辑 | 跨任务 skill 必须有验证集和拒绝编辑缓冲，不能把每次反思都写入长期记忆 |
+| **MUSE-Autoskill** (2605.27366) | skill lifecycle：创建、记忆、管理、评估、细化 | 技能库应有 unit tests、版本、适用条件、失败案例和淘汰机制 |
+| **BenchTrace** (2605.29225) | 评估反思诊断能力和 failure avoidance，指出 agents 会遗忘早期经验并发生负迁移 | 经验库需要质量评分、去噪、过期策略和 controlled eval |
+| **Agent-Native Research Artifact** (2604.24658) | 保存探索图、失败实验、证据和执行包，提升 PaperBench/RE-Bench 表现 | 本项目的实验轨迹应保存为机器可读 artifact，而非只写 summary |
+| **Your Agent May Misevolve** (2509.26354) | model/memory/tool/workflow 四类自进化都可能引入安全退化、漏洞和对齐下降 | 自修改、工具创建和长期记忆都要经过隔离评估与人工可审计日志 |
+| **EvoMap empirical study** (2605.25815) | 大规模 A2A 资产网络中 98% 资产未复用，且自报指标/伪测试导致质量失真 | 多智能体共享资产不能依赖自报分数，必须独立复跑和可验证采用率 |
+
+### 5.4 对开放优化 benchmark 的统一抽象
+
+建议将所有目标 benchmark 统一为如下接口：
+
+```text
+Task = {
+  context: problem statement + data + constraints + prior artifacts,
+  initial_artifact: runnable baseline or seed solution,
+  evaluator: deterministic or statistically controlled executable scorer,
+  budget: wall-clock / eval calls / tokens / hardware,
+  feasibility: hard constraints and validation checks,
+  score: continuous objective with normalized improvement
+}
+
+Candidate = {
+  patch_or_program,
+  parent_ids,
+  operator_id,
+  plan,
+  execution_log,
+  score_vector,
+  cost,
+  novelty_features,
+  lessons
+}
+```
+
+这个抽象能同时覆盖：
+- Frontier-Eng：候选是工程设计/代码/参数，score 来自 simulator/verifier。
+- MLE-bench：候选是训练 pipeline / feature / model / hyperparams，score 来自 local CV、public leaderboard proxy 或最终提交。
+- ALE-Bench：候选是启发式算法代码，score 来自 AtCoder-style evaluator。
+- RE-Bench：候选是研究工程 artifact，score 来自任务环境 evaluator。
+
+### 5.5 推荐系统架构
+
+```text
+Benchmark Adapter Layer
+  ├── FrontierEngAdapter
+  ├── MLEBenchAdapter
+  ├── ALEBenchAdapter
+  └── REBenchAdapter
+
+Optimization Core
+  ├── Artifact Store: git branch / patch / metadata / lineage
+  ├── Evaluation Service: sandbox, budget, proxy/full eval, reproducibility
+  ├── Search Controller: depth-first exploitation + MCTS + island/MAP-Elites
+  ├── Operator Library: mutate, debug, refactor, hyperparam, merge, simplify, restart
+  ├── Memory System: episodic traces, task notebook, cross-task skill library
+  └── Meta Controller: operator/model routing, novelty gate, budget allocation
+
+Agent Roles
+  ├── Scientist/Strategist: proposes hypotheses and experiment plans
+  ├── Implementer: edits code/artifacts
+  ├── Debugger: fixes runtime failures and feasibility violations
+  ├── Evaluator/Critic: interprets scores, detects overfitting and leakage
+  ├── Researcher/RAG: retrieves papers, notebooks, docs, prior solutions
+  └── Safety Auditor: checks self-modification, tool creation, memory writes
+```
+
+### 5.6 关键设计原则
+
+1. **先做 intra-task optimization，再做 agent 自修改。** Frontier-Eng/MLE-bench 的直接收益来自更好的候选解搜索；DGM/SICA 式自改框架代码风险高，适合后置。
+2. **深搜为主，受控多样性为辅。** Frontier-Eng 的 depth > width 结论和 MLE ideation diversity 并不矛盾：主线需要持续 exploit，同时保留少量 island/restart/novelty 分支。
+3. **评估要分层。** 对 MLE/仿真/硬件任务，完整评估昂贵；必须使用 proxy score、早停、缓存、失败快速分类和 fidelity-aware aggregation。
+4. **长期记忆只收可验证经验。** 反思文本如果未经验证，会造成负迁移和 misevolution；写入 skill/memory 前应要求 replay 或 held-out improvement。
+5. **候选解是主要进化对象。** 第一阶段进化 program/pipeline/parameter；第二阶段进化 operator prompt 和 skill；第三阶段才进化 workflow/agent code。
+6. **每个改进都要保留 provenance。** 包括父代、patch、执行日志、环境、随机种子、score、成本、失败原因，方便复现和后续训练。
+7. **多智能体共享必须基于独立验证。** 共享 skill/asset 的采用率、收益和失败率应由 orchestrator 复跑统计，不接受 agent 自报。
+
+### 5.7 本项目优先级判断
+
+短期最值得投入的组合是：
+
+```text
+MVP:
+  MLE-bench lite / selected tasks
+  ALE-Bench selected tasks
+  Frontier-Eng selected tasks if environment is available
+
+Core algorithm:
+  git-native candidate archive
+  AIDE-style tree search
+  MAP-Elites/island archive
+  proxy/full evaluation cascade
+  task-level memory + verified skill library
+
+First ablations:
+  depth-only vs width-only vs hybrid
+  greedy vs MCTS vs evolution
+  no-memory vs reflection memory vs verified memory
+  no-proxy vs proxy-gated full evaluation
+  single model vs routed model ensemble
+```
+
+如果目标是尽快在公开 benchmark 上有竞争力，建议不要一开始做通用“自我重写 agent 源码”。更稳的路线是先把 benchmark adapter、评估缓存、candidate archive、operator library 和 budget allocator 做扎实，再逐步让 prompt/skill/workflow 自进化。

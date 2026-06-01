@@ -1,0 +1,18 @@
+{
+  "id": "local_command_demo",
+  "family": "local_command",
+  "objective": "Read solution.json and maximize -abs(x - 5).",
+  "initial_artifact": {
+    "files": {
+      "solution.json": "{\"x\": 0}"
+    }
+  },
+  "metadata": {
+    "eval_command": ["python3", "evaluate.py"],
+    "score_file": "score.json",
+    "timeout_seconds": 60,
+    "static_files": {
+      "evaluate.py": "import json\nx = json.load(open('solution.json'))['x']\njson.dump({'objective': -abs(x - 5), 'feasible': True, 'metrics': {'x': x}}, open('score.json', 'w'))\n"
+    }
+  }
+}

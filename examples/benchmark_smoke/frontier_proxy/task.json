@@ -1,0 +1,18 @@
+{
+  "id": "frontier_proxy",
+  "family": "frontier_eng_proxy",
+  "objective": "Tune a constrained engineering design artifact. Maximize simulated efficiency while satisfying hard safety constraints.",
+  "initial_artifact": {
+    "files": {
+      "design.json": "{\"material\":\"aluminum\",\"wall_thickness_mm\":7.5,\"cooling_channels\":2,\"inlet_angle_deg\":35,\"safety_factor\":1.05}"
+    }
+  },
+  "metadata": {
+    "eval_command": ["python3", "evaluate.py"],
+    "score_file": "score.json",
+    "timeout_seconds": 20,
+    "static_files": {
+      "evaluate.py": "import json\np=json.load(open('design.json'))\nmat=p.get('material')\nth=float(p.get('wall_thickness_mm', 0.0))\nchannels=int(p.get('cooling_channels', 0))\nangle=float(p.get('inlet_angle_deg', 0.0))\nsafety=float(p.get('safety_factor', 0.0))\nfeasible=1.2 <= safety <= 2.5 and 3.0 <= th <= 12.0 and 1 <= channels <= 8 and 10 <= angle <= 70 and mat in ['titanium','steel','aluminum']\nmat_bonus={'titanium':14,'steel':7,'aluminum':3}.get(mat,-12)\nscore=60+mat_bonus\nscore+=channels*5 - max(0, channels-5)*8\nscore-=abs(th-5.2)*4.5\nscore-=abs(angle-42)*0.55\nscore-=abs(safety-1.35)*12\nif channels >= 5 and th < 4.8:\n    feasible=False\n    score-=25\nif not feasible:\n    score-=60\njson.dump({'objective':round(score,4),'feasible':feasible,'metrics':{'material':mat,'wall_thickness_mm':th,'cooling_channels':channels,'inlet_angle_deg':angle,'safety_factor':safety},'cost':{'eval_calls':1,'sim_seconds':0.02}}, open('score.json','w'))\n"
+    }
+  }
+}

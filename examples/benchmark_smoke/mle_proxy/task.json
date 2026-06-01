@@ -1,0 +1,18 @@
+{
+  "id": "mle_proxy",
+  "family": "mle_bench_proxy",
+  "objective": "Tune a small tabular ML pipeline artifact. Maximize proxy validation score while avoiding leakage flags.",
+  "initial_artifact": {
+    "files": {
+      "pipeline.json": "{\"model\":\"linear\",\"learning_rate\":0.2,\"n_estimators\":80,\"feature_policy\":\"basic\",\"leakage_checks\":true}"
+    }
+  },
+  "metadata": {
+    "eval_command": ["python3", "evaluate.py"],
+    "score_file": "score.json",
+    "timeout_seconds": 20,
+    "static_files": {
+      "evaluate.py": "import json, math\np=json.load(open('pipeline.json'))\nmodel=p.get('model')\nlr=float(p.get('learning_rate', 1.0))\nn=int(p.get('n_estimators', 0))\nfeature=p.get('feature_policy')\nchecks=bool(p.get('leakage_checks', False))\nfeasible=checks and 0.001 <= lr <= 0.5 and 10 <= n <= 1000\nmodel_bonus={'gbdt':18,'xgboost':16,'random_forest':10,'linear':0}.get(model,-12)\nfeature_bonus={'interaction':8,'target_safe':6,'basic':0}.get(feature,-8)\nlr_penalty=abs(math.log10(lr)-math.log10(0.035))*14\nn_penalty=abs(n-360)/24\nobjective=72+model_bonus+feature_bonus-lr_penalty-n_penalty\nif not feasible:\n    objective-=50\njson.dump({'objective':round(objective,4),'feasible':feasible,'metrics':{'model_bonus':model_bonus,'feature_bonus':feature_bonus,'lr_penalty':round(lr_penalty,4),'n_penalty':round(n_penalty,4)},'cost':{'eval_calls':1}}, open('score.json','w'))\n"
+    }
+  }
+}

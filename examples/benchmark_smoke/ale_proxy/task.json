@@ -1,0 +1,18 @@
+{
+  "id": "ale_proxy",
+  "family": "ale_bench_proxy",
+  "objective": "Tune an algorithm-engineering heuristic artifact. Maximize multi-seed score under deterministic runtime limits.",
+  "initial_artifact": {
+    "files": {
+      "heuristic.json": "{\"beam_width\":8,\"lookahead\":1,\"restart_budget\":20,\"temperature\":0.4,\"pruning\":\"none\"}"
+    }
+  },
+  "metadata": {
+    "eval_command": ["python3", "evaluate.py"],
+    "score_file": "score.json",
+    "timeout_seconds": 20,
+    "static_files": {
+      "evaluate.py": "import json\nh=json.load(open('heuristic.json'))\nbeam=int(h.get('beam_width', 0))\nlook=int(h.get('lookahead', 0))\nrestart=int(h.get('restart_budget', 0))\ntemp=float(h.get('temperature', 1.0))\npruning=h.get('pruning')\nfeasible=1 <= beam <= 128 and 1 <= look <= 5 and 0 <= restart <= 300 and 0.0 <= temp <= 2.0\nscore=45.0\nscore+=min(22, beam**0.5*3.0)\nscore+=look*6.5 - max(0, look-3)*8\nscore+=min(16, restart/10.0)\nscore-=abs(temp-0.7)*9\nscore+={'dominance':10,'bound':7,'none':0}.get(pruning,-10)\nif beam*look > 220:\n    score-=18\n    feasible=False\nif not feasible:\n    score-=40\njson.dump({'objective':round(score,4),'feasible':feasible,'metrics':{'beam_width':beam,'lookahead':look,'restart_budget':restart,'temperature':temp,'pruning':pruning},'cost':{'eval_calls':1,'seeds':5}}, open('score.json','w'))\n"
+    }
+  }
+}
