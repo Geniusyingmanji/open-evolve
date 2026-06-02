@@ -4,7 +4,9 @@ from pathlib import Path
 
 from open_evolve.benchmarks.local_command import LocalCommandBenchmarkAdapter
 from open_evolve.benchmarks.config_loader import load_candidate_draft, load_task_config
+from open_evolve.benchmarks.frontier_eng import discover_frontier_task_ids
 from open_evolve.benchmarks.toy_numeric import ToyNumericBenchmark
+from open_evolve.cli import _frontier_rows_markdown, _frontier_task_selection, build_parser
 from open_evolve.core.artifact_store import FileArtifactStore
 from open_evolve.core.archive import CandidateArchive
 from open_evolve.core.feedback_compute import estimate_effective_feedback_compute
@@ -307,6 +309,59 @@ class FrameworkTests(unittest.TestCase):
     def test_prefixed_json_extraction(self):
         parsed = extract_prefixed_json('noise\nOPEN_EVOLVE_X {"a": 1}\n', "OPEN_EVOLVE_X ")
         self.assertEqual(parsed, {"a": 1})
+
+    def test_frontier_task_discovery_from_configs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task_dir = root / "frontier_eval" / "conf" / "task"
+            task_dir.mkdir(parents=True)
+            (task_dir / "pid.yaml").write_text("name: unified\nbenchmark: Robotics/PIDTuning\n", encoding="utf-8")
+            (task_dir / "battery.yaml").write_text(
+                "name: unified\nbenchmark: 'EnergyStorage/BatteryFastChargingProfile' # note\n",
+                encoding="utf-8",
+            )
+            (task_dir / "smoke.yaml").write_text("benchmark: Should/Skip\n", encoding="utf-8")
+            (task_dir / "unified.yaml").write_text("benchmark: Should/SkipToo\n", encoding="utf-8")
+            (task_dir / "empty.yaml").write_text("name: unified\nbenchmark: null\n", encoding="utf-8")
+
+            self.assertEqual(
+                discover_frontier_task_ids(root),
+                ["EnergyStorage/BatteryFastChargingProfile", "Robotics/PIDTuning"],
+            )
+
+    def test_frontier_task_selection_filters_and_parser(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task_dir = root / "frontier_eval" / "conf" / "task"
+            task_dir.mkdir(parents=True)
+            (task_dir / "pid.yaml").write_text("benchmark: Robotics/PIDTuning\n", encoding="utf-8")
+            (task_dir / "uav.yaml").write_text("benchmark: Robotics/UAVInspectionCoverageWithWind\n", encoding="utf-8")
+            (task_dir / "battery.yaml").write_text("benchmark: EnergyStorage/BatteryFastChargingProfile\n", encoding="utf-8")
+
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "list-frontier",
+                    "--repo-root",
+                    str(root),
+                    "--include",
+                    "Robotics/*",
+                    "--exclude",
+                    "*UAV*",
+                    "--limit",
+                    "1",
+                ]
+            )
+            self.assertEqual(_frontier_task_selection(args), ["Robotics/PIDTuning"])
+
+    def test_frontier_rows_markdown(self):
+        text = _frontier_rows_markdown(
+            [{"benchmark": "Robotics/PIDTuning", "ok": True, "error": ""}],
+            ["benchmark", "ok", "error"],
+            "Frontier Baseline Smoke",
+        )
+        self.assertIn("# Frontier Baseline Smoke", text)
+        self.assertIn("Robotics/PIDTuning", text)
 
 
 if __name__ == "__main__":

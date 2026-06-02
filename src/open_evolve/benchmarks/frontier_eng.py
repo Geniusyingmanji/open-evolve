@@ -21,6 +21,54 @@ def default_frontier_repo_root() -> Path:
     return Path(os.environ.get("OPEN_EVOLVE_FRONTIER_ROOT", "/data/zyf/benchmarks/Frontier-Engineering")).expanduser()
 
 
+def discover_frontier_task_ids(repo_root: Optional[Path] = None) -> List[str]:
+    """Discover Frontier-Engineering benchmark IDs from Hydra task configs."""
+
+    root = Path(repo_root) if repo_root is not None else default_frontier_repo_root()
+    task_dir = root / "frontier_eval" / "conf" / "task"
+    if not task_dir.is_dir():
+        return []
+
+    task_ids: List[str] = []
+    seen = set()
+    for path in sorted(task_dir.glob("*.yaml")):
+        if path.name in {"smoke.yaml", "unified.yaml"}:
+            continue
+        benchmark_id = _read_benchmark_id_from_task_config(path)
+        if benchmark_id and benchmark_id not in seen:
+            seen.add(benchmark_id)
+            task_ids.append(benchmark_id)
+    return task_ids
+
+
+def _read_benchmark_id_from_task_config(path: Path) -> Optional[str]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        if key.strip() != "benchmark":
+            continue
+        value = value.strip()
+        if not value or value in {"null", "None", "~"}:
+            return None
+        if value[0:1] in {"'", '"'}:
+            quote = value[0]
+            end = value.find(quote, 1)
+            if end > 0:
+                value = value[1:end]
+            else:
+                value = value[1:]
+        else:
+            value = value.split(" #", 1)[0].strip()
+        return value or None
+    return None
+
+
 class FrontierEngineeringAdapter(BenchmarkAdapter):
     """Evaluate Frontier-Engineering candidates through the official unified evaluator."""
 
@@ -76,7 +124,8 @@ class FrontierEngineeringAdapter(BenchmarkAdapter):
         ]
 
     def iter_task_ids(self) -> Iterable[str]:
-        return [self.benchmark_id]
+        discovered = discover_frontier_task_ids(self.repo_root)
+        return discovered or [self.benchmark_id]
 
     def evaluate(self, task: Task, candidate: Candidate) -> EvaluationResult:
         started = utc_ts()

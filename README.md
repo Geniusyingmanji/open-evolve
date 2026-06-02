@@ -222,11 +222,24 @@ Useful commands:
 PYTHONPATH=src python3 -m open_evolve.cli eval-frontier \
   --benchmark WirelessChannelSimulation/HighReliableSimulation
 
+PYTHONPATH=src python3 -m open_evolve.cli list-frontier \
+  --include 'Robotics/*'
+
+PYTHONPATH=src python3 -m open_evolve.cli frontier-smoke \
+  --benchmarks Robotics/PIDTuning,EnergyStorage/BatteryFastChargingProfile \
+  --format markdown
+
 PYTHONPATH=src python3 -m open_evolve.cli run-frontier \
   --benchmark WirelessChannelSimulation/HighReliableSimulation \
   --workspace .open_evolve/frontier_smoke \
   --iterations 3 --max-evaluations 4 \
   --llm-timeout-seconds 120 --llm-retries 1
+
+PYTHONPATH=src python3 -m open_evolve.cli run-frontier-suite \
+  --benchmarks Robotics/PIDTuning,StructuralOptimization/ISCSO2015 \
+  --workspace .open_evolve/frontier_suite \
+  --operator float-jitter \
+  --iterations 8 --max-evaluations 40
 
 PYTHONPATH=src python3 -m open_evolve.cli run-ale \
   --problem ahc039 --lite \
@@ -235,5 +248,7 @@ PYTHONPATH=src python3 -m open_evolve.cli run-ale \
 PYTHONPATH=src python3 -m open_evolve.cli eval-ale \
   --problem ahc039 --lite --split private
 ```
+
+`run-frontier-suite` writes per-task runs under `workspace/runs/` plus aggregate JSON/Markdown under `workspace/suite/`. Use `--benchmarks-file`, `--include`, `--exclude`, and `--limit` to shape a reproducible task slice before scaling to longer campaigns.
 
 MLE-bench remains blocked on Kaggle credentials for official data preparation.

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from open_evolve.benchmarks.ale_bench import ALEBenchAdapter
-from open_evolve.benchmarks.frontier_eng import FrontierEngineeringAdapter
+from open_evolve.benchmarks.frontier_eng import FrontierEngineeringAdapter, discover_frontier_task_ids
 from open_evolve.benchmarks.toy_numeric import ToyNumericBenchmark
 from open_evolve.benchmarks.config_loader import load_candidate_draft, load_task_config
 from open_evolve.benchmarks.local_command import LocalCommandBenchmarkAdapter
@@ -125,19 +128,196 @@ def _azure_client_with_timeout(timeout_seconds: float) -> AzureOpenAIResponsesCl
     return client
 
 
-def eval_frontier(args: argparse.Namespace) -> int:
-    adapter = FrontierEngineeringAdapter(
-        repo_root=Path(args.repo_root) if args.repo_root else None,
-        benchmark_id=args.benchmark,
-        timeout_seconds=args.timeout_seconds,
-        evaluator_timeout_seconds=args.evaluator_timeout_seconds,
-        runtime_env_name=args.runtime_env_name,
-        runtime_python_path=args.runtime_python_path,
+def _safe_id(value: str, max_len: int = 96) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in value)
+    safe = "_".join(part for part in safe.split("_") if part)
+    return (safe or "run")[:max_len]
+
+
+def _csv_values(values: Optional[Iterable[str]]) -> List[str]:
+    result: List[str] = []
+    for value in values or []:
+        for item in str(value).split(","):
+            item = item.strip()
+            if item:
+                result.append(item)
+    return result
+
+
+def _frontier_adapter_from_args(args: argparse.Namespace, benchmark: Optional[str] = None) -> FrontierEngineeringAdapter:
+    return FrontierEngineeringAdapter(
+        repo_root=Path(args.repo_root) if getattr(args, "repo_root", None) else None,
+        benchmark_id=benchmark or getattr(args, "benchmark", "WirelessChannelSimulation/HighReliableSimulation"),
+        timeout_seconds=getattr(args, "timeout_seconds", 900.0),
+        evaluator_timeout_seconds=getattr(args, "evaluator_timeout_seconds", 300.0),
+        runtime_env_name=getattr(args, "runtime_env_name", "frontier-eval-driver"),
+        runtime_python_path=getattr(args, "runtime_python_path", None),
     )
+
+
+def _frontier_task_selection(args: argparse.Namespace) -> List[str]:
+    explicit = _csv_values(getattr(args, "benchmarks", None))
+    benchmark_file = getattr(args, "benchmarks_file", None)
+    if benchmark_file:
+        explicit.extend(
+            line.strip()
+            for line in Path(benchmark_file).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+    if explicit:
+        task_ids = explicit
+    else:
+        root = Path(args.repo_root) if getattr(args, "repo_root", None) else None
+        task_ids = discover_frontier_task_ids(root)
+
+    include = _csv_values(getattr(args, "include", None))
+    exclude = _csv_values(getattr(args, "exclude", None))
+    if include:
+        task_ids = [task_id for task_id in task_ids if any(fnmatch.fnmatch(task_id, pat) for pat in include)]
+    if exclude:
+        task_ids = [task_id for task_id in task_ids if not any(fnmatch.fnmatch(task_id, pat) for pat in exclude)]
+
+    seen = set()
+    deduped = []
+    for task_id in task_ids:
+        if task_id not in seen:
+            seen.add(task_id)
+            deduped.append(task_id)
+    limit = int(getattr(args, "limit", 0) or 0)
+    return deduped[:limit] if limit > 0 else deduped
+
+
+def _frontier_candidate_rel(task) -> str:
+    return str(
+        task.metadata.get("candidate_destination_rel")
+        or task.metadata.get("initial_program_rel")
+        or "solution.py"
+    )
+
+
+def _seed_frontier_task_from_file(task, candidate_file: Optional[str]) -> None:
+    if not candidate_file:
+        return
+    task.initial_artifact = {
+        "files": {_frontier_candidate_rel(task): Path(candidate_file).read_text(encoding="utf-8")}
+    }
+
+
+def _frontier_operator_library(args: argparse.Namespace, task) -> OperatorLibrary:
+    operator_items = []
+    if args.operator in ("llm", "mixed"):
+        operator_items.append(
+            AzureCodeEditOperator(
+                client=_azure_client_with_timeout(args.llm_timeout_seconds),
+                path=_frontier_candidate_rel(task),
+                samples=args.samples,
+                max_output_tokens=args.max_output_tokens,
+                request_retries=args.llm_retries,
+            )
+        )
+    if args.operator in ("float-jitter", "mixed"):
+        operator_items.append(
+            RegexFloatJitterOperator(
+                path=_frontier_candidate_rel(task),
+                samples=args.jitter_samples,
+                changes_per_sample=args.jitter_changes,
+                relative_jitter=args.float_relative_jitter,
+                absolute_jitter=args.float_absolute_jitter,
+                min_abs_value=args.float_min_abs,
+                region=args.jitter_region,
+            )
+        )
+    return OperatorLibrary(operator_items)
+
+
+def _run_frontier_search(
+    args: argparse.Namespace, benchmark: str, run_id: Optional[str] = None
+) -> Tuple[object, Dict[str, Any]]:
+    workspace = Path(args.workspace)
+    adapter = _frontier_adapter_from_args(args, benchmark=benchmark)
+    task = adapter.load_task(benchmark)
+    _seed_frontier_task_from_file(task, getattr(args, "candidate_file", None))
+    trace_name = _safe_id(run_id or benchmark) + "_trace.jsonl"
+    trace = TraceRecorder(workspace / "traces" / trace_name)
+    controller_cls = ArchiveSearchController if args.search == "archive" else GreedySearchController
+    controller = controller_cls(
+        adapter=adapter,
+        operators=_frontier_operator_library(args, task),
+        store=FileArtifactStore(workspace / "runs"),
+        config=SearchConfig(
+            max_iterations=args.iterations,
+            max_evaluations=args.max_evaluations,
+            parent_pool_size=args.parent_pool_size,
+            seed=args.seed,
+            metadata={"benchmark": benchmark, "adapter": "frontier_engineering", "operator": args.operator},
+        ),
+        trace=trace,
+    )
+    result = controller.run(task, run_id=run_id)
+    payload = {
+        "summary": result.summary,
+        "best_artifact": result.best.artifact if result.best else None,
+        "workspace": str(workspace),
+        "trace": str(trace.path),
+    }
+    return result, payload
+
+
+def _score_metric(summary, key: str) -> object:
+    if summary is None or summary.best_score is None:
+        return ""
+    return summary.best_score.metrics.get(key, "")
+
+
+def _frontier_run_row(result, payload: Dict[str, Any], error: Optional[str] = None) -> Dict[str, Any]:
+    summary = result.summary if result is not None else None
+    best_score = summary.best_score if summary is not None else None
+    return {
+        "benchmark": summary.task_id if summary is not None else "",
+        "run_id": summary.run_id if summary is not None else "",
+        "ok": bool(best_score and best_score.feasible and not error),
+        "evaluations": summary.evaluations if summary is not None else "",
+        "best_objective": best_score.objective if best_score is not None else "",
+        "combined_score": _score_metric(summary, "combined_score"),
+        "valid": _score_metric(summary, "valid"),
+        "workspace": payload.get("workspace", "") if payload else "",
+        "trace": payload.get("trace", "") if payload else "",
+        "error": error or "",
+    }
+
+
+def _frontier_rows_markdown(rows: List[Dict[str, Any]], columns: List[str], title: str) -> str:
+    lines = [
+        "# %s" % title,
+        "",
+        "| " + " | ".join(columns) + " |",
+        "| " + " | ".join("---" for _ in columns) + " |",
+    ]
+    for row in rows:
+        values = [str(row.get(column, "")).replace("\n", " ") for column in columns]
+        lines.append("| " + " | ".join(values) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def _write_frontier_rows(rows: List[Dict[str, Any]], output: Optional[str], fmt: str, title: str) -> Optional[Path]:
+    if not output:
+        return None
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "json":
+        path.write_text(json_dumps(rows) + "\n", encoding="utf-8")
+    else:
+        columns = list(rows[0].keys()) if rows else ["benchmark", "ok", "error"]
+        path.write_text(_frontier_rows_markdown(rows, columns, title), encoding="utf-8")
+    return path
+
+
+def eval_frontier(args: argparse.Namespace) -> int:
+    adapter = _frontier_adapter_from_args(args)
     task = adapter.load_task(args.benchmark)
     artifact = dict(task.initial_artifact)
     if args.candidate_file:
-        candidate_rel = str(task.metadata.get("candidate_destination_rel") or task.metadata.get("initial_program_rel"))
+        candidate_rel = _frontier_candidate_rel(task)
         artifact = {"files": {candidate_rel: Path(args.candidate_file).read_text(encoding="utf-8")}}
     candidate = Candidate.from_draft(task, CandidateDraft(artifact=artifact))
     result = adapter.evaluate(task, candidate)
@@ -186,67 +366,147 @@ def eval_ale(args: argparse.Namespace) -> int:
 
 
 def run_frontier(args: argparse.Namespace) -> int:
-    workspace = Path(args.workspace)
-    adapter = FrontierEngineeringAdapter(
-        repo_root=Path(args.repo_root) if args.repo_root else None,
-        benchmark_id=args.benchmark,
-        timeout_seconds=args.timeout_seconds,
-        evaluator_timeout_seconds=args.evaluator_timeout_seconds,
-        runtime_env_name=args.runtime_env_name,
-        runtime_python_path=args.runtime_python_path,
-    )
-    task = adapter.load_task(args.benchmark)
-    if args.candidate_file:
-        candidate_rel = str(task.metadata.get("candidate_destination_rel") or task.metadata.get("initial_program_rel"))
-        task.initial_artifact = {"files": {candidate_rel: Path(args.candidate_file).read_text(encoding="utf-8")}}
-    trace = TraceRecorder(workspace / "traces" / "frontier_trace.jsonl")
-    operator_items = []
-    if args.operator in ("llm", "mixed"):
-        operator_items.append(
-            AzureCodeEditOperator(
-                client=_azure_client_with_timeout(args.llm_timeout_seconds),
-                path=str(task.metadata.get("candidate_destination_rel") or task.metadata.get("initial_program_rel")),
-                samples=args.samples,
-                max_output_tokens=args.max_output_tokens,
-                request_retries=args.llm_retries,
-            )
-        )
-    if args.operator in ("float-jitter", "mixed"):
-        operator_items.append(
-            RegexFloatJitterOperator(
-                path=str(task.metadata.get("candidate_destination_rel") or task.metadata.get("initial_program_rel")),
-                samples=args.jitter_samples,
-                changes_per_sample=args.jitter_changes,
-                relative_jitter=args.float_relative_jitter,
-                absolute_jitter=args.float_absolute_jitter,
-                min_abs_value=args.float_min_abs,
-                region=args.jitter_region,
-            )
-        )
-    operators = OperatorLibrary(operator_items)
-    controller_cls = ArchiveSearchController if args.search == "archive" else GreedySearchController
-    controller = controller_cls(
-        adapter=adapter,
-        operators=operators,
-        store=FileArtifactStore(workspace / "runs"),
-        config=SearchConfig(
-            max_iterations=args.iterations,
-            max_evaluations=args.max_evaluations,
-            parent_pool_size=args.parent_pool_size,
-            seed=args.seed,
-            metadata={"benchmark": args.benchmark, "adapter": "frontier_engineering"},
-        ),
-        trace=trace,
-    )
-    result = controller.run(task, run_id=args.run_id)
-    payload = {
-        "summary": result.summary,
-        "best_artifact": result.best.artifact if result.best else None,
-        "workspace": str(workspace),
-        "trace": str(trace.path),
-    }
+    result, payload = _run_frontier_search(args, args.benchmark, run_id=args.run_id)
     print(json_dumps(payload))
     return 0 if result.best and result.best.score and result.best.score.feasible else 1
+
+
+def list_frontier(args: argparse.Namespace) -> int:
+    task_ids = _frontier_task_selection(args)
+    rows = [{"benchmark": task_id} for task_id in task_ids]
+    _write_frontier_rows(rows, args.output, args.format, "Frontier Tasks")
+    if args.format == "json":
+        print(json_dumps(rows))
+    else:
+        print(_frontier_rows_markdown(rows, ["benchmark"], "Frontier Tasks"), end="")
+    return 0
+
+
+def frontier_smoke(args: argparse.Namespace) -> int:
+    rows: List[Dict[str, Any]] = []
+    task_ids = _frontier_task_selection(args)
+    if not task_ids:
+        rows.append(
+            {
+                "benchmark": "",
+                "ok": False,
+                "objective": "",
+                "combined_score": "",
+                "valid": "",
+                "runtime_s": "",
+                "error": "no Frontier tasks selected",
+            }
+        )
+    for benchmark in task_ids:
+        row: Dict[str, Any] = {
+            "benchmark": benchmark,
+            "ok": False,
+            "objective": "",
+            "combined_score": "",
+            "valid": "",
+            "runtime_s": "",
+            "error": "",
+        }
+        try:
+            adapter = _frontier_adapter_from_args(args, benchmark=benchmark)
+            task = adapter.load_task(benchmark)
+            candidate = Candidate.from_draft(task, CandidateDraft(artifact=dict(task.initial_artifact)))
+            result = adapter.evaluate(task, candidate)
+            row.update(
+                {
+                    "ok": result.error is None and result.score.feasible,
+                    "objective": result.score.objective,
+                    "combined_score": result.score.metrics.get("combined_score", ""),
+                    "valid": result.score.metrics.get("valid", ""),
+                    "runtime_s": result.score.metrics.get("runtime_s", ""),
+                    "error": result.error or "",
+                }
+            )
+        except Exception as exc:
+            row["error"] = "%s: %s" % (type(exc).__name__, exc)
+        rows.append(row)
+
+    _write_frontier_rows(rows, args.output, args.format, "Frontier Baseline Smoke")
+    if args.format == "json":
+        print(json_dumps(rows))
+    else:
+        print(
+            _frontier_rows_markdown(
+                rows,
+                ["benchmark", "ok", "objective", "combined_score", "valid", "error"],
+                "Frontier Baseline Smoke",
+            ),
+            end="",
+        )
+    all_ok = all(bool(row.get("ok")) for row in rows)
+    return 1 if args.fail_on_error and not all_ok else 0
+
+
+def run_frontier_suite(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    prefix = args.run_id_prefix or ("frontier_suite_%s" % timestamp)
+    rows: List[Dict[str, Any]] = []
+    task_ids = _frontier_task_selection(args)
+    if not task_ids:
+        rows.append(
+            {
+                "benchmark": "",
+                "run_id": "",
+                "ok": False,
+                "evaluations": "",
+                "best_objective": "",
+                "combined_score": "",
+                "valid": "",
+                "workspace": str(workspace),
+                "trace": "",
+                "error": "no Frontier tasks selected",
+            }
+        )
+    for index, benchmark in enumerate(task_ids, start=1):
+        run_id = "%s_%03d_%s" % (prefix, index, _safe_id(benchmark, max_len=72))
+        try:
+            result, payload = _run_frontier_search(args, benchmark, run_id=run_id)
+            rows.append(_frontier_run_row(result, payload))
+        except Exception as exc:
+            rows.append(
+                {
+                    "benchmark": benchmark,
+                    "run_id": run_id,
+                    "ok": False,
+                    "evaluations": "",
+                    "best_objective": "",
+                    "combined_score": "",
+                    "valid": "",
+                    "workspace": str(workspace),
+                    "trace": "",
+                    "error": "%s: %s" % (type(exc).__name__, exc),
+                }
+            )
+        if args.stop_on_error and rows[-1].get("error"):
+            break
+
+    suite_dir = workspace / "suite"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    json_path = suite_dir / ("%s_summary.json" % prefix)
+    md_path = suite_dir / ("%s_summary.md" % prefix)
+    json_path.write_text(json_dumps(rows) + "\n", encoding="utf-8")
+    md_path.write_text(
+        _frontier_rows_markdown(
+            rows,
+            ["benchmark", "run_id", "ok", "evaluations", "best_objective", "combined_score", "valid", "error"],
+            "Frontier Suite Summary",
+        ),
+        encoding="utf-8",
+    )
+    _write_frontier_rows(rows, args.output, args.format, "Frontier Suite Summary")
+    payload = {"rows": rows, "summary_json": str(json_path), "summary_markdown": str(md_path)}
+    if args.format == "json":
+        print(json_dumps(payload))
+    else:
+        print(md_path.read_text(encoding="utf-8"), end="")
+    all_ok = all(bool(row.get("ok")) for row in rows)
+    return 1 if args.fail_on_error and not all_ok else 0
 
 
 def run_ale(args: argparse.Namespace) -> int:
@@ -392,6 +652,35 @@ def build_parser() -> argparse.ArgumentParser:
     frontier_eval.add_argument("--runtime-python-path", default=None)
     frontier_eval.set_defaults(func=eval_frontier)
 
+    frontier_list = subparsers.add_parser("list-frontier", help="List discovered Frontier-Engineering tasks")
+    frontier_list.add_argument("--repo-root", default=None)
+    frontier_list.add_argument("--benchmarks", action="append", default=[])
+    frontier_list.add_argument("--benchmarks-file", default=None)
+    frontier_list.add_argument("--include", action="append", default=[])
+    frontier_list.add_argument("--exclude", action="append", default=[])
+    frontier_list.add_argument("--limit", type=int, default=0)
+    frontier_list.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    frontier_list.add_argument("--output", default=None)
+    frontier_list.set_defaults(func=list_frontier)
+
+    frontier_smoke_parser = subparsers.add_parser(
+        "frontier-smoke", help="Evaluate initial candidates for multiple Frontier-Engineering tasks"
+    )
+    frontier_smoke_parser.add_argument("--repo-root", default=None)
+    frontier_smoke_parser.add_argument("--benchmarks", action="append", default=[])
+    frontier_smoke_parser.add_argument("--benchmarks-file", default=None)
+    frontier_smoke_parser.add_argument("--include", action="append", default=[])
+    frontier_smoke_parser.add_argument("--exclude", action="append", default=[])
+    frontier_smoke_parser.add_argument("--limit", type=int, default=0)
+    frontier_smoke_parser.add_argument("--timeout-seconds", type=float, default=900.0)
+    frontier_smoke_parser.add_argument("--evaluator-timeout-seconds", type=float, default=300.0)
+    frontier_smoke_parser.add_argument("--runtime-env-name", default="frontier-eval-driver")
+    frontier_smoke_parser.add_argument("--runtime-python-path", default=None)
+    frontier_smoke_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    frontier_smoke_parser.add_argument("--output", default=None)
+    frontier_smoke_parser.add_argument("--fail-on-error", action="store_true")
+    frontier_smoke_parser.set_defaults(func=frontier_smoke)
+
     ale_eval = subparsers.add_parser("eval-ale", help="Evaluate one ALE-Bench candidate")
     ale_eval.add_argument("--repo-root", default=None)
     ale_eval.add_argument("--problem", default="ahc039")
@@ -433,6 +722,41 @@ def build_parser() -> argparse.ArgumentParser:
     frontier_run.add_argument("--runtime-env-name", default="frontier-eval-driver")
     frontier_run.add_argument("--runtime-python-path", default=None)
     frontier_run.set_defaults(func=run_frontier)
+
+    frontier_suite = subparsers.add_parser("run-frontier-suite", help="Run search over multiple Frontier-Engineering tasks")
+    frontier_suite.add_argument("--workspace", default=".open_evolve/frontier_suite")
+    frontier_suite.add_argument("--repo-root", default=None)
+    frontier_suite.add_argument("--benchmarks", action="append", default=[])
+    frontier_suite.add_argument("--benchmarks-file", default=None)
+    frontier_suite.add_argument("--include", action="append", default=[])
+    frontier_suite.add_argument("--exclude", action="append", default=[])
+    frontier_suite.add_argument("--limit", type=int, default=0)
+    frontier_suite.add_argument("--iterations", type=int, default=3)
+    frontier_suite.add_argument("--max-evaluations", type=int, default=5)
+    frontier_suite.add_argument("--parent-pool-size", type=int, default=1)
+    frontier_suite.add_argument("--seed", type=int, default=0)
+    frontier_suite.add_argument("--run-id-prefix", default=None)
+    frontier_suite.add_argument("--search", choices=["greedy", "archive"], default="greedy")
+    frontier_suite.add_argument("--operator", choices=["llm", "float-jitter", "mixed"], default="float-jitter")
+    frontier_suite.add_argument("--samples", type=int, default=1)
+    frontier_suite.add_argument("--max-output-tokens", type=int, default=4096)
+    frontier_suite.add_argument("--llm-timeout-seconds", type=float, default=180.0)
+    frontier_suite.add_argument("--llm-retries", type=int, default=2)
+    frontier_suite.add_argument("--jitter-samples", type=int, default=4)
+    frontier_suite.add_argument("--jitter-changes", type=int, default=2)
+    frontier_suite.add_argument("--float-relative-jitter", type=float, default=0.15)
+    frontier_suite.add_argument("--float-absolute-jitter", type=float, default=0.0)
+    frontier_suite.add_argument("--float-min-abs", type=float, default=1e-9)
+    frontier_suite.add_argument("--jitter-region", choices=["auto", "all", "evolve-block", "allowed-section"], default="auto")
+    frontier_suite.add_argument("--timeout-seconds", type=float, default=900.0)
+    frontier_suite.add_argument("--evaluator-timeout-seconds", type=float, default=300.0)
+    frontier_suite.add_argument("--runtime-env-name", default="frontier-eval-driver")
+    frontier_suite.add_argument("--runtime-python-path", default=None)
+    frontier_suite.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    frontier_suite.add_argument("--output", default=None)
+    frontier_suite.add_argument("--stop-on-error", action="store_true")
+    frontier_suite.add_argument("--fail-on-error", action="store_true")
+    frontier_suite.set_defaults(func=run_frontier_suite)
 
     ale_run = subparsers.add_parser("run-ale", help="Run LLM search on ALE-Bench public split")
     ale_run.add_argument("--workspace", default=".open_evolve/ale")
