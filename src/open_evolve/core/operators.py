@@ -19,6 +19,96 @@ class Operator(ABC):
         raise NotImplementedError
 
 
+def _select_source(parent: Candidate, path: Optional[str] = None) -> tuple[Optional[str], str]:
+    files = parent.artifact.get("files")
+    if isinstance(files, dict):
+        if path and isinstance(files.get(path), str):
+            return path, files[path]
+        if len(files) == 1:
+            key, value = next(iter(files.items()))
+            return str(key), str(value)
+    code = parent.artifact.get("code")
+    if isinstance(code, str):
+        return None, code
+    return None, ""
+
+
+def _line_ranges(content: str) -> List[Tuple[int, int, str]]:
+    ranges: List[Tuple[int, int, str]] = []
+    cursor = 0
+    for line in content.splitlines(keepends=True):
+        end = cursor + len(line)
+        ranges.append((cursor, end, line))
+        cursor = end
+    return ranges
+
+
+def _evolve_block_spans(content: str) -> List[Tuple[int, int]]:
+    spans: List[Tuple[int, int]] = []
+    cursor = 0
+    while True:
+        start_match = re.search(r"EVOLVE-BLOCK-START", content[cursor:])
+        if start_match is None:
+            break
+        marker_end = cursor + start_match.end()
+        line_end = content.find("\n", marker_end)
+        span_start = line_end + 1 if line_end >= 0 else marker_end
+        end_match = re.search(r"EVOLVE-BLOCK-END", content[span_start:])
+        if end_match is None:
+            spans.append((span_start, len(content)))
+            break
+        span_end = span_start + end_match.start()
+        if span_start < span_end:
+            spans.append((span_start, span_end))
+        cursor = span_start + end_match.end()
+    return spans
+
+
+def _allowed_section_spans(content: str) -> List[Tuple[int, int]]:
+    spans: List[Tuple[int, int]] = []
+    active = False
+    span_start: Optional[int] = None
+    for start, end, line in _line_ranges(content):
+        lowered = line.lower()
+        if active and ("do not modify" in lowered or "not allowed to modify" in lowered):
+            if span_start is not None and span_start < start:
+                spans.append((span_start, start))
+            active = False
+            span_start = None
+        is_allowed_marker = (
+            "allowed to modify" in lowered or "partially modifiable" in lowered
+        ) and "not allowed to modify" not in lowered and "do not modify" not in lowered
+        if is_allowed_marker and not active:
+            active = True
+            span_start = start
+    if active and span_start is not None and span_start < len(content):
+        spans.append((span_start, len(content)))
+    return spans
+
+
+def _source_spans(content: str, region: str) -> List[Tuple[int, int]]:
+    mode = (region or "all").lower()
+    if mode == "all":
+        return [(0, len(content))]
+    if mode == "allowed-section":
+        return _allowed_section_spans(content)
+    if mode == "evolve-block":
+        return _evolve_block_spans(content)
+    if mode == "auto":
+        spans = _allowed_section_spans(content)
+        if spans:
+            return spans
+        spans = _evolve_block_spans(content)
+        if spans:
+            return spans
+        return [(0, len(content))]
+    raise ValueError("Unknown source region: %s" % region)
+
+
+def _contained_in_spans(start: int, end: int, spans: Sequence[Tuple[int, int]]) -> bool:
+    return any(span_start <= start and end <= span_end for span_start, span_end in spans)
+
+
 class JsonFieldStepOperator(Operator):
     """Generate variants by adding fixed steps to an integer JSON field."""
 
@@ -146,6 +236,7 @@ class RegexNumberJitterOperator(Operator):
         lower: int = 0,
         upper: int = 100000,
         min_abs_value: int = 1000,
+        region: str = "all",
         operator_id: str = "regex_number_jitter",
     ) -> None:
         self.path = path
@@ -155,16 +246,18 @@ class RegexNumberJitterOperator(Operator):
         self.lower = int(lower)
         self.upper = int(upper)
         self.min_abs_value = int(min_abs_value)
+        self.region = region
         self.id = operator_id
 
     def propose(self, task: Task, parent: Candidate, rng: random.Random) -> Sequence[CandidateDraft]:
-        path, content = self._select_source(parent)
+        path, content = _select_source(parent, self.path)
         if not content:
             return []
+        spans = _source_spans(content, self.region)
         matches = [
             match
             for match in re.finditer(r"(?<![A-Za-z0-9_.])-?\d+(?![A-Za-z0-9_.])", content)
-            if abs(int(match.group(0))) >= self.min_abs_value
+            if abs(int(match.group(0))) >= self.min_abs_value and _contained_in_spans(match.start(), match.end(), spans)
         ]
         if not matches:
             return []
@@ -208,23 +301,11 @@ class RegexNumberJitterOperator(Operator):
                         "sample_idx": sample_idx,
                         "changes": len(replacements),
                         "jitter": self.jitter,
+                        "region": self.region,
                     },
                 )
             )
         return drafts
-
-    def _select_source(self, parent: Candidate) -> tuple[Optional[str], str]:
-        files = parent.artifact.get("files")
-        if isinstance(files, dict):
-            if self.path and isinstance(files.get(self.path), str):
-                return self.path, files[self.path]
-            if len(files) == 1:
-                key, value = next(iter(files.items()))
-                return str(key), str(value)
-        code = parent.artifact.get("code")
-        if isinstance(code, str):
-            return None, code
-        return None, ""
 
 
 class RegexFloatJitterOperator(Operator):
@@ -242,6 +323,7 @@ class RegexFloatJitterOperator(Operator):
         min_abs_value: float = 1e-9,
         lower: Optional[float] = None,
         upper: Optional[float] = None,
+        region: str = "all",
         operator_id: str = "regex_float_jitter",
     ) -> None:
         self.path = path
@@ -252,19 +334,21 @@ class RegexFloatJitterOperator(Operator):
         self.min_abs_value = float(min_abs_value)
         self.lower = lower
         self.upper = upper
+        self.region = region
         self.id = operator_id
 
     def propose(self, task: Task, parent: Candidate, rng: random.Random) -> Sequence[CandidateDraft]:
-        path, content = self._select_source(parent)
+        path, content = _select_source(parent, self.path)
         if not content:
             return []
+        spans = _source_spans(content, self.region)
         matches = []
         for match in self._FLOAT_RE.finditer(content):
             try:
                 value = float(match.group(0))
             except ValueError:
                 continue
-            if abs(value) >= self.min_abs_value:
+            if abs(value) >= self.min_abs_value and _contained_in_spans(match.start(), match.end(), spans):
                 matches.append((match, value))
         if not matches:
             return []
@@ -311,23 +395,11 @@ class RegexFloatJitterOperator(Operator):
                         "changes": len(replacements),
                         "relative_jitter": self.relative_jitter,
                         "absolute_jitter": self.absolute_jitter,
+                        "region": self.region,
                     },
                 )
             )
         return drafts
-
-    def _select_source(self, parent: Candidate) -> tuple[Optional[str], str]:
-        files = parent.artifact.get("files")
-        if isinstance(files, dict):
-            if self.path and isinstance(files.get(self.path), str):
-                return self.path, files[self.path]
-            if len(files) == 1:
-                key, value = next(iter(files.items()))
-                return str(key), str(value)
-        code = parent.artifact.get("code")
-        if isinstance(code, str):
-            return None, code
-        return None, ""
 
 
 class OperatorLibrary:

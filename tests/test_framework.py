@@ -27,7 +27,12 @@ from open_evolve.harness.harness_spec import HarnessSpec
 from open_evolve.harness.mutation import mutate_policy
 from open_evolve.harness.registry import HarnessRegistry
 from open_evolve.experiments.harness_ablation import HarnessAblationRunner
-from open_evolve.experiments.reporting import write_ablation_json, write_ablation_markdown
+from open_evolve.experiments.reporting import (
+    collect_run_summary_rows,
+    write_ablation_json,
+    write_ablation_markdown,
+    write_run_summary_markdown,
+)
 from open_evolve.models.azure_openai import AzureOpenAIConfig, AzureOpenAIResponsesClient
 from open_evolve.benchmarks._subprocess_json import extract_prefixed_json
 
@@ -158,6 +163,34 @@ class FrameworkTests(unittest.TestCase):
         self.assertEqual(len(drafts), 2)
         self.assertNotEqual(drafts[0].artifact["code"], task.initial_artifact["code"])
 
+    def test_regex_float_jitter_auto_region_prefers_allowed_section(self):
+        code = (
+            "# EVOLVE-BLOCK-START\n"
+            "# DO NOT MODIFY\n"
+            "frozen = 1.0\n"
+            "# ALLOWED TO MODIFY\n"
+            "tunable = 2.0\n"
+            "# EVOLVE-BLOCK-END\n"
+        )
+        task = Task(id="code", family="local", objective="", initial_artifact={"code": code})
+        parent = Candidate.from_draft(task, CandidateDraft(artifact=task.initial_artifact))
+        op = RegexFloatJitterOperator(samples=4, changes_per_sample=1, relative_jitter=0.1, region="auto")
+        drafts = op.propose(task, parent, __import__("random").Random(0))
+        self.assertEqual(len(drafts), 4)
+        for draft in drafts:
+            self.assertIn("frozen = 1.0", draft.artifact["code"])
+            self.assertNotEqual(draft.artifact["code"], code)
+
+    def test_regex_float_jitter_auto_region_uses_evolve_block_fallback(self):
+        code = "outside = 1.0\n# EVOLVE-BLOCK-START\ninside = 2.0\n# EVOLVE-BLOCK-END\n"
+        task = Task(id="code", family="local", objective="", initial_artifact={"code": code})
+        parent = Candidate.from_draft(task, CandidateDraft(artifact=task.initial_artifact))
+        op = RegexFloatJitterOperator(samples=2, changes_per_sample=1, relative_jitter=0.1, region="auto")
+        drafts = op.propose(task, parent, __import__("random").Random(0))
+        self.assertEqual(len(drafts), 2)
+        for draft in drafts:
+            self.assertIn("outside = 1.0", draft.artifact["code"])
+
     def test_harness_ablation_runner(self):
         spec = HarnessSpec.default("toy")
 
@@ -181,6 +214,21 @@ class FrameworkTests(unittest.TestCase):
             md_path = write_ablation_markdown(results, root / "report.md")
             self.assertTrue(json_path.exists())
             self.assertIn("Harness Ablation Report", md_path.read_text(encoding="utf-8"))
+
+    def test_run_summary_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "runs" / "demo"
+            run_dir.mkdir(parents=True)
+            (run_dir / "summary.json").write_text(
+                '{"run_id":"demo","task_id":"task","evaluations":3,'
+                '"best_score":{"objective":7.5,"feasible":true,"metrics":{"combined_score":7.5,"valid":1}}}',
+                encoding="utf-8",
+            )
+            rows = collect_run_summary_rows([root])
+            self.assertEqual(rows[0]["run_id"], "demo")
+            report_path = write_run_summary_markdown(rows, root / "summary.md")
+            self.assertIn("demo", report_path.read_text(encoding="utf-8"))
 
     def test_local_command_benchmark_adapter(self):
         task = Task(

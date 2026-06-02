@@ -26,6 +26,11 @@ from open_evolve.core.search_controller import ArchiveSearchController, GreedySe
 from open_evolve.core.trace_recorder import TraceRecorder
 from open_evolve.core.types import json_dumps
 from open_evolve.core.types import Candidate, CandidateDraft
+from open_evolve.experiments.reporting import (
+    collect_run_summary_rows,
+    write_run_summary_json,
+    write_run_summary_markdown,
+)
 from open_evolve.harness.harness_spec import HarnessSpec
 from open_evolve.harness.registry import HarnessRegistry
 from open_evolve.models.azure_openai import AzureOpenAIResponsesClient
@@ -212,6 +217,7 @@ def run_frontier(args: argparse.Namespace) -> int:
                 relative_jitter=args.float_relative_jitter,
                 absolute_jitter=args.float_absolute_jitter,
                 min_abs_value=args.float_min_abs,
+                region=args.jitter_region,
             )
         )
     operators = OperatorLibrary(operator_items)
@@ -313,6 +319,40 @@ def run_ale(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def summarize_runs(args: argparse.Namespace) -> int:
+    paths = [Path(value) for value in (args.paths or [".open_evolve"])]
+    rows = collect_run_summary_rows(paths)
+    if args.output:
+        if args.format == "json":
+            write_run_summary_json(rows, Path(args.output))
+        else:
+            write_run_summary_markdown(rows, Path(args.output))
+    if args.format == "json":
+        print(json_dumps(rows))
+    else:
+        lines = [
+            "| Run | Task | Evaluations | Best objective | Combined | Valid |",
+            "|-----|------|-------------|----------------|----------|-------|",
+        ]
+        for row in rows:
+            if row.get("error"):
+                lines.append("| %s | ERROR |  |  | %s |  |" % (row.get("path", ""), row.get("error", "")))
+            else:
+                lines.append(
+                    "| %s | %s | %s | %s | %s | %s |"
+                    % (
+                        row.get("run_id", ""),
+                        row.get("task_id", ""),
+                        row.get("evaluations", ""),
+                        row.get("best_objective", ""),
+                        row.get("combined_score", ""),
+                        row.get("valid", ""),
+                    )
+                )
+        print("\n".join(lines))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Open Evolve framework CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -383,6 +423,7 @@ def build_parser() -> argparse.ArgumentParser:
     frontier_run.add_argument("--float-relative-jitter", type=float, default=0.15)
     frontier_run.add_argument("--float-absolute-jitter", type=float, default=0.0)
     frontier_run.add_argument("--float-min-abs", type=float, default=1e-9)
+    frontier_run.add_argument("--jitter-region", choices=["auto", "all", "evolve-block", "allowed-section"], default="auto")
     frontier_run.add_argument("--timeout-seconds", type=float, default=900.0)
     frontier_run.add_argument("--evaluator-timeout-seconds", type=float, default=300.0)
     frontier_run.add_argument("--runtime-env-name", default="frontier-eval-driver")
@@ -417,6 +458,12 @@ def build_parser() -> argparse.ArgumentParser:
     ale_run.add_argument("--private-final", dest="private_final", action="store_true")
     ale_run.add_argument("--no-private-final", dest="private_final", action="store_false")
     ale_run.set_defaults(func=run_ale)
+
+    summary = subparsers.add_parser("summarize-runs", help="Summarize saved run summary.json files")
+    summary.add_argument("paths", nargs="*", default=[".open_evolve"])
+    summary.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    summary.add_argument("--output", default=None)
+    summary.set_defaults(func=summarize_runs)
     return parser
 
 
