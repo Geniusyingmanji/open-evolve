@@ -15,6 +15,7 @@ from open_evolve.core.operators import (
     FileStringReplaceOperator,
     JsonFieldStepOperator,
     OperatorLibrary,
+    RegexFloatJitterOperator,
     RegexNumberJitterOperator,
 )
 from open_evolve.core.process_evaluator import evaluate_process_quality
@@ -145,6 +146,14 @@ class FrameworkTests(unittest.TestCase):
         task = Task(id="code", family="local", objective="", initial_artifact={"code": "cout << 15000 << 25000;\n"})
         parent = Candidate.from_draft(task, CandidateDraft(artifact=task.initial_artifact))
         op = RegexNumberJitterOperator(samples=2, changes_per_sample=1, jitter=10, min_abs_value=1000)
+        drafts = op.propose(task, parent, __import__("random").Random(0))
+        self.assertEqual(len(drafts), 2)
+        self.assertNotEqual(drafts[0].artifact["code"], task.initial_artifact["code"])
+
+    def test_regex_float_jitter_operator(self):
+        task = Task(id="code", family="local", objective="", initial_artifact={"code": "x = 5.2; y = 1e-3;\n"})
+        parent = Candidate.from_draft(task, CandidateDraft(artifact=task.initial_artifact))
+        op = RegexFloatJitterOperator(samples=2, changes_per_sample=1, relative_jitter=0.1, min_abs_value=1e-4)
         drafts = op.propose(task, parent, __import__("random").Random(0))
         self.assertEqual(len(drafts), 2)
         self.assertNotEqual(drafts[0].artifact["code"], task.initial_artifact["code"])

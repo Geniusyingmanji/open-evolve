@@ -14,7 +14,13 @@ from open_evolve.core.artifact_store import FileArtifactStore
 from open_evolve.core.evaluator import EvaluationService
 from open_evolve.core.feedback_compute import estimate_effective_feedback_compute
 from open_evolve.core.llm_operators import AzureCodeEditOperator
-from open_evolve.core.operators import JsonFieldStepOperator, OperatorLibrary, RandomJsonFieldOperator, RegexNumberJitterOperator
+from open_evolve.core.operators import (
+    JsonFieldStepOperator,
+    OperatorLibrary,
+    RandomJsonFieldOperator,
+    RegexFloatJitterOperator,
+    RegexNumberJitterOperator,
+)
 from open_evolve.core.process_evaluator import evaluate_process_quality
 from open_evolve.core.search_controller import ArchiveSearchController, GreedySearchController, SearchConfig
 from open_evolve.core.trace_recorder import TraceRecorder
@@ -186,8 +192,9 @@ def run_frontier(args: argparse.Namespace) -> int:
     )
     task = adapter.load_task(args.benchmark)
     trace = TraceRecorder(workspace / "traces" / "frontier_trace.jsonl")
-    operators = OperatorLibrary(
-        [
+    operator_items = []
+    if args.operator in ("llm", "mixed"):
+        operator_items.append(
             AzureCodeEditOperator(
                 client=_azure_client_with_timeout(args.llm_timeout_seconds),
                 path=str(task.metadata.get("candidate_destination_rel") or task.metadata.get("initial_program_rel")),
@@ -195,8 +202,19 @@ def run_frontier(args: argparse.Namespace) -> int:
                 max_output_tokens=args.max_output_tokens,
                 request_retries=args.llm_retries,
             )
-        ]
-    )
+        )
+    if args.operator in ("float-jitter", "mixed"):
+        operator_items.append(
+            RegexFloatJitterOperator(
+                path=str(task.metadata.get("candidate_destination_rel") or task.metadata.get("initial_program_rel")),
+                samples=args.jitter_samples,
+                changes_per_sample=args.jitter_changes,
+                relative_jitter=args.float_relative_jitter,
+                absolute_jitter=args.float_absolute_jitter,
+                min_abs_value=args.float_min_abs,
+            )
+        )
+    operators = OperatorLibrary(operator_items)
     controller_cls = ArchiveSearchController if args.search == "archive" else GreedySearchController
     controller = controller_cls(
         adapter=adapter,
@@ -355,10 +373,16 @@ def build_parser() -> argparse.ArgumentParser:
     frontier_run.add_argument("--seed", type=int, default=0)
     frontier_run.add_argument("--run-id", default=None)
     frontier_run.add_argument("--search", choices=["greedy", "archive"], default="greedy")
+    frontier_run.add_argument("--operator", choices=["llm", "float-jitter", "mixed"], default="llm")
     frontier_run.add_argument("--samples", type=int, default=1)
     frontier_run.add_argument("--max-output-tokens", type=int, default=4096)
     frontier_run.add_argument("--llm-timeout-seconds", type=float, default=180.0)
     frontier_run.add_argument("--llm-retries", type=int, default=2)
+    frontier_run.add_argument("--jitter-samples", type=int, default=4)
+    frontier_run.add_argument("--jitter-changes", type=int, default=2)
+    frontier_run.add_argument("--float-relative-jitter", type=float, default=0.15)
+    frontier_run.add_argument("--float-absolute-jitter", type=float, default=0.0)
+    frontier_run.add_argument("--float-min-abs", type=float, default=1e-9)
     frontier_run.add_argument("--timeout-seconds", type=float, default=900.0)
     frontier_run.add_argument("--evaluator-timeout-seconds", type=float, default=300.0)
     frontier_run.add_argument("--runtime-env-name", default="frontier-eval-driver")

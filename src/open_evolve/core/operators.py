@@ -227,6 +227,109 @@ class RegexNumberJitterOperator(Operator):
         return None, ""
 
 
+class RegexFloatJitterOperator(Operator):
+    """Jitter floating-point constants in a source artifact."""
+
+    _FLOAT_RE = re.compile(r"(?<![A-Za-z0-9_])(-?(?:\d+\.\d*|\.\d+|\d+[eE][+-]?\d+)(?:[eE][+-]?\d+)?)(?![A-Za-z0-9_])")
+
+    def __init__(
+        self,
+        path: Optional[str] = None,
+        samples: int = 4,
+        changes_per_sample: int = 2,
+        relative_jitter: float = 0.15,
+        absolute_jitter: float = 0.0,
+        min_abs_value: float = 1e-9,
+        lower: Optional[float] = None,
+        upper: Optional[float] = None,
+        operator_id: str = "regex_float_jitter",
+    ) -> None:
+        self.path = path
+        self.samples = int(samples)
+        self.changes_per_sample = int(changes_per_sample)
+        self.relative_jitter = float(relative_jitter)
+        self.absolute_jitter = float(absolute_jitter)
+        self.min_abs_value = float(min_abs_value)
+        self.lower = lower
+        self.upper = upper
+        self.id = operator_id
+
+    def propose(self, task: Task, parent: Candidate, rng: random.Random) -> Sequence[CandidateDraft]:
+        path, content = self._select_source(parent)
+        if not content:
+            return []
+        matches = []
+        for match in self._FLOAT_RE.finditer(content):
+            try:
+                value = float(match.group(0))
+            except ValueError:
+                continue
+            if abs(value) >= self.min_abs_value:
+                matches.append((match, value))
+        if not matches:
+            return []
+
+        drafts: List[CandidateDraft] = []
+        for sample_idx in range(max(1, self.samples)):
+            selected = rng.sample(matches, k=min(len(matches), max(1, self.changes_per_sample)))
+            replacements = {}
+            for match, old_value in selected:
+                scale = 1.0 + rng.uniform(-self.relative_jitter, self.relative_jitter)
+                delta = rng.uniform(-self.absolute_jitter, self.absolute_jitter) if self.absolute_jitter else 0.0
+                new_value = old_value * scale + delta
+                if self.lower is not None:
+                    new_value = max(float(self.lower), new_value)
+                if self.upper is not None:
+                    new_value = min(float(self.upper), new_value)
+                replacements[(match.start(), match.end())] = "%.12g" % new_value
+
+            new_content_parts = []
+            cursor = 0
+            for (start, end), value in sorted(replacements.items()):
+                new_content_parts.append(content[cursor:start])
+                new_content_parts.append(value)
+                cursor = end
+            new_content_parts.append(content[cursor:])
+            new_content = "".join(new_content_parts)
+            if new_content == content:
+                continue
+
+            artifact = copy.deepcopy(parent.artifact)
+            if path:
+                artifact.setdefault("files", {})[path] = new_content
+            else:
+                artifact["code"] = new_content
+            drafts.append(
+                CandidateDraft(
+                    artifact=artifact,
+                    parent_ids=[parent.id],
+                    operator_id=self.id,
+                    plan="Jitter floating-point constants in %s." % (path or "code"),
+                    metadata={
+                        "path": path,
+                        "sample_idx": sample_idx,
+                        "changes": len(replacements),
+                        "relative_jitter": self.relative_jitter,
+                        "absolute_jitter": self.absolute_jitter,
+                    },
+                )
+            )
+        return drafts
+
+    def _select_source(self, parent: Candidate) -> tuple[Optional[str], str]:
+        files = parent.artifact.get("files")
+        if isinstance(files, dict):
+            if self.path and isinstance(files.get(self.path), str):
+                return self.path, files[self.path]
+            if len(files) == 1:
+                key, value = next(iter(files.items()))
+                return str(key), str(value)
+        code = parent.artifact.get("code")
+        if isinstance(code, str):
+            return None, code
+        return None, ""
+
+
 class OperatorLibrary:
     def __init__(self, operators: Sequence[Operator]) -> None:
         self.operators = list(operators)
