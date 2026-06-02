@@ -196,6 +196,9 @@ def run_frontier(args: argparse.Namespace) -> int:
         runtime_python_path=args.runtime_python_path,
     )
     task = adapter.load_task(args.benchmark)
+    if args.candidate_file:
+        candidate_rel = str(task.metadata.get("candidate_destination_rel") or task.metadata.get("initial_program_rel"))
+        task.initial_artifact = {"files": {candidate_rel: Path(args.candidate_file).read_text(encoding="utf-8")}}
     trace = TraceRecorder(workspace / "traces" / "frontier_trace.jsonl")
     operator_items = []
     if args.operator in ("llm", "mixed"):
@@ -407,6 +410,7 @@ def build_parser() -> argparse.ArgumentParser:
     frontier_run.add_argument("--workspace", default=".open_evolve/frontier")
     frontier_run.add_argument("--repo-root", default=None)
     frontier_run.add_argument("--benchmark", default="WirelessChannelSimulation/HighReliableSimulation")
+    frontier_run.add_argument("--candidate-file", default=None)
     frontier_run.add_argument("--iterations", type=int, default=3)
     frontier_run.add_argument("--max-evaluations", type=int, default=5)
     frontier_run.add_argument("--parent-pool-size", type=int, default=1)
