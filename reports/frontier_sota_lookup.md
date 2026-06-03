@@ -24,10 +24,10 @@ scores are negative.
 
 | Task | Official raw SOTA | Top participant | Official baseline | Local best | Status |
 |---|---:|---|---:|---:|---|
-| WirelessChannelSimulation/HighReliableSimulation | 544.7187 | GPT-OSS + ABMCTS | 192.5193 | 799.1678624 | Above SOTA by +46.71% |
+| WirelessChannelSimulation/HighReliableSimulation | 544.7187 | GPT-OSS + ABMCTS | 192.5193 | 897.0560316 | Above SOTA by +64.68% |
 | EnergyStorage/BatteryFastChargingProfile | 121.991365 | GPT-5.4 | 71.2806 | 119.3422613 | Below SOTA by 2.6491 raw |
 | EnergyStorage/BatteryFastChargingSPMe | 122.9430436 | GPT-5.4 | 66.1636 | 80.88928455 | Below SOTA by 42.0538 raw |
-| Robotics/PIDTuning | 0.1639 | Claude Opus 4.6 + ShinkaiEvolve | 0.0366 | 0.1209846244 | Below SOTA by 0.0429 raw |
+| Robotics/PIDTuning | 0.1639 | Claude Opus 4.6 + ShinkaiEvolve | 0.0366 | 0.1211966216 | Below SOTA by 0.0427 raw |
 | Robotics/DynamicObstacleAvoidanceNavigation | 0.0862 | GPT-OSS + ABMCTS | 0.0722 | 0.07317073171 | Below SOTA by 0.0130 raw |
 | Robotics/UAVInspectionCoverageWithWind | 55.9109 | Grok 4.20 | 28.8519 | 31.16662479 | Below SOTA by 24.7443 raw |
 | StructuralOptimization/ISCSO2015 | -968.4567 | Claude Opus 4.6 | -5401.589 | -5144.478595 | Above baseline, far below SOTA |
@@ -38,7 +38,7 @@ scores are negative.
 
 - Most current local Frontier gains are against shipped baselines, not official SOTA.
 - The clear exception is `WirelessChannelSimulation/HighReliableSimulation`, where
-  the local GPT-5.5/OpenEvolve run beats the public raw SOTA record.
+  local GPT-5.5/OpenEvolve runs beat the public raw SOTA record.
 - Some locally discovered/runnable tasks, such as `ParticlePhysics/MuonTomography`,
   `PyMOTOSIMPCompliance`, `DawnAircraftDesignOptimization`, `DiffSimThermalControl`,
   `DuckDBWorkloadOptimization`, and `EV2GymSmartCharging`, are not present in the
