@@ -16,7 +16,7 @@ from open_evolve.benchmarks.local_command import LocalCommandBenchmarkAdapter
 from open_evolve.core.artifact_store import FileArtifactStore
 from open_evolve.core.evaluator import EvaluationService
 from open_evolve.core.feedback_compute import estimate_effective_feedback_compute
-from open_evolve.core.llm_operators import AzureCodeEditOperator
+from open_evolve.core.llm_operators import AzureCodeEditOperator, CodexCliEditOperator
 from open_evolve.core.operators import (
     JsonFieldStepOperator,
     OperatorLibrary,
@@ -215,7 +215,19 @@ def _frontier_operator_library(args: argparse.Namespace, task) -> OperatorLibrar
                 request_retries=args.llm_retries,
             )
         )
-    if args.operator in ("float-jitter", "mixed"):
+    if args.operator in ("codex", "codex-mixed"):
+        operator_items.append(
+            CodexCliEditOperator(
+                codex_bin=args.codex_bin,
+                profile=args.codex_profile,
+                path=_frontier_candidate_rel(task),
+                samples=args.samples,
+                timeout_seconds=args.codex_timeout_seconds,
+                sandbox=args.codex_sandbox,
+                extra_instructions=args.codex_extra_instructions,
+            )
+        )
+    if args.operator in ("float-jitter", "mixed", "codex-mixed"):
         operator_items.append(
             RegexFloatJitterOperator(
                 path=_frontier_candidate_rel(task),
@@ -706,11 +718,16 @@ def build_parser() -> argparse.ArgumentParser:
     frontier_run.add_argument("--seed", type=int, default=0)
     frontier_run.add_argument("--run-id", default=None)
     frontier_run.add_argument("--search", choices=["greedy", "archive"], default="greedy")
-    frontier_run.add_argument("--operator", choices=["llm", "float-jitter", "mixed"], default="llm")
+    frontier_run.add_argument("--operator", choices=["llm", "codex", "float-jitter", "mixed", "codex-mixed"], default="llm")
     frontier_run.add_argument("--samples", type=int, default=1)
     frontier_run.add_argument("--max-output-tokens", type=int, default=4096)
     frontier_run.add_argument("--llm-timeout-seconds", type=float, default=180.0)
     frontier_run.add_argument("--llm-retries", type=int, default=2)
+    frontier_run.add_argument("--codex-bin", default=None)
+    frontier_run.add_argument("--codex-profile", default=None)
+    frontier_run.add_argument("--codex-timeout-seconds", type=float, default=300.0)
+    frontier_run.add_argument("--codex-sandbox", choices=["read-only", "workspace-write", "danger-full-access"], default="workspace-write")
+    frontier_run.add_argument("--codex-extra-instructions", default="")
     frontier_run.add_argument("--jitter-samples", type=int, default=4)
     frontier_run.add_argument("--jitter-changes", type=int, default=2)
     frontier_run.add_argument("--float-relative-jitter", type=float, default=0.15)
@@ -737,11 +754,16 @@ def build_parser() -> argparse.ArgumentParser:
     frontier_suite.add_argument("--seed", type=int, default=0)
     frontier_suite.add_argument("--run-id-prefix", default=None)
     frontier_suite.add_argument("--search", choices=["greedy", "archive"], default="greedy")
-    frontier_suite.add_argument("--operator", choices=["llm", "float-jitter", "mixed"], default="float-jitter")
+    frontier_suite.add_argument("--operator", choices=["llm", "codex", "float-jitter", "mixed", "codex-mixed"], default="float-jitter")
     frontier_suite.add_argument("--samples", type=int, default=1)
     frontier_suite.add_argument("--max-output-tokens", type=int, default=4096)
     frontier_suite.add_argument("--llm-timeout-seconds", type=float, default=180.0)
     frontier_suite.add_argument("--llm-retries", type=int, default=2)
+    frontier_suite.add_argument("--codex-bin", default=None)
+    frontier_suite.add_argument("--codex-profile", default=None)
+    frontier_suite.add_argument("--codex-timeout-seconds", type=float, default=300.0)
+    frontier_suite.add_argument("--codex-sandbox", choices=["read-only", "workspace-write", "danger-full-access"], default="workspace-write")
+    frontier_suite.add_argument("--codex-extra-instructions", default="")
     frontier_suite.add_argument("--jitter-samples", type=int, default=4)
     frontier_suite.add_argument("--jitter-changes", type=int, default=2)
     frontier_suite.add_argument("--float-relative-jitter", type=float, default=0.15)

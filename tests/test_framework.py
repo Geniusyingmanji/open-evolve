@@ -10,7 +10,7 @@ from open_evolve.cli import _frontier_rows_markdown, _frontier_task_selection, b
 from open_evolve.core.artifact_store import FileArtifactStore
 from open_evolve.core.archive import CandidateArchive
 from open_evolve.core.feedback_compute import estimate_effective_feedback_compute
-from open_evolve.core.llm_operators import AzureCodeEditOperator
+from open_evolve.core.llm_operators import AzureCodeEditOperator, CodexCliEditOperator
 from open_evolve.core.memory import VerifiedMemoryStore
 from open_evolve.core.operators import (
     FileAppendOperator,
@@ -305,6 +305,34 @@ class FrameworkTests(unittest.TestCase):
         plan, code = AzureCodeEditOperator._parse_response("```cpp\nint main(){return 1;}\n```")
         self.assertIn("fenced", plan)
         self.assertEqual(code, "int main(){return 1;}")
+
+    def test_codex_cli_edit_operator_with_fake_codex(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "fake_codex.py"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "workdir = Path(sys.argv[sys.argv.index('-C') + 1])\n"
+                "target = workdir / 'solution.py'\n"
+                "target.write_text(target.read_text().replace('x = 1', 'x = 2'), encoding='utf-8')\n"
+                "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'{\"plan\":\"fake edit\",\"changed\":true}'}}))\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            task = Task(
+                id="codex",
+                family="local",
+                objective="Increase x.",
+                initial_artifact={"files": {"solution.py": "x = 1\n"}},
+            )
+            parent = Candidate.from_draft(task, CandidateDraft(artifact=dict(task.initial_artifact)))
+            op = CodexCliEditOperator(codex_bin=str(fake), profile=None, path="solution.py", samples=1)
+            drafts = op.propose(task, parent, __import__("random").Random(0))
+            self.assertEqual(len(drafts), 1)
+            self.assertEqual(drafts[0].artifact["files"]["solution.py"], "x = 2\n")
+            self.assertEqual(drafts[0].plan, "fake edit")
 
     def test_prefixed_json_extraction(self):
         parsed = extract_prefixed_json('noise\nOPEN_EVOLVE_X {"a": 1}\n', "OPEN_EVOLVE_X ")

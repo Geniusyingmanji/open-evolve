@@ -49,6 +49,14 @@ PYTHONPATH=src python3 -m open_evolve.cli test-azure \
   --prompt 'Return exactly: OPEN_EVOLVE_OK'
 ```
 
+Smoke test the local Codex CLI harness with Azure managed identity:
+
+```bash
+/home/azureuser/zicong/OpenAgentScaler/scripts/codex-azure-mi \
+  -p azure_uami exec --json --ephemeral -C /tmp --skip-git-repo-check \
+  'Return exactly OPEN_EVOLVE_CODEX_SMOKE and nothing else.'
+```
+
 Run three benchmark-family smoke tests through the same task adapter:
 
 ```bash
@@ -235,6 +243,13 @@ PYTHONPATH=src python3 -m open_evolve.cli run-frontier \
   --iterations 3 --max-evaluations 4 \
   --llm-timeout-seconds 120 --llm-retries 1
 
+PYTHONPATH=src python3 -m open_evolve.cli run-frontier \
+  --benchmark Robotics/PIDTuning \
+  --workspace .open_evolve/frontier_codex \
+  --operator codex \
+  --iterations 2 --max-evaluations 3 \
+  --codex-timeout-seconds 300
+
 PYTHONPATH=src python3 -m open_evolve.cli run-frontier-suite \
   --benchmarks Robotics/PIDTuning,StructuralOptimization/ISCSO2015 \
   --workspace .open_evolve/frontier_suite \
@@ -250,5 +265,10 @@ PYTHONPATH=src python3 -m open_evolve.cli eval-ale \
 ```
 
 `run-frontier-suite` writes per-task runs under `workspace/runs/` plus aggregate JSON/Markdown under `workspace/suite/`. Use `--benchmarks-file`, `--include`, `--exclude`, and `--limit` to shape a reproducible task slice before scaling to longer campaigns.
+
+Frontier score comparisons should be reported with clear baselines. Most local suite
+improvements are versus the task's initial program/baseline, not necessarily public
+SOTA. Only claim SOTA when a public leaderboard/paper score has been matched to the
+same task and evaluator.
 
 MLE-bench remains blocked on Kaggle credentials for official data preparation.
