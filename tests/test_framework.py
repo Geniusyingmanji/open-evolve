@@ -334,6 +334,40 @@ class FrameworkTests(unittest.TestCase):
             self.assertEqual(drafts[0].artifact["files"]["solution.py"], "x = 2\n")
             self.assertEqual(drafts[0].plan, "fake edit")
 
+    def test_codex_cli_prompt_restricts_filesystem_search(self):
+        task = Task(
+            id="codex",
+            family="local",
+            objective="Improve score.",
+            initial_artifact={"files": {"solution.py": "x = 1\n"}},
+        )
+        prompt = CodexCliEditOperator(profile=None)._prompt(task, "solution.py", 0)
+        self.assertIn("Use only files in the current working directory", prompt)
+        self.assertIn("Do not search or read paths outside", prompt)
+        self.assertIn("find /", prompt)
+
+    def test_codex_cli_timeout_returns_no_draft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "slow_codex.py"
+            fake.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(2)\n", encoding="utf-8")
+            fake.chmod(0o755)
+            task = Task(
+                id="codex",
+                family="local",
+                objective="Increase x.",
+                initial_artifact={"files": {"solution.py": "x = 1\n"}},
+            )
+            parent = Candidate.from_draft(task, CandidateDraft(artifact=dict(task.initial_artifact)))
+            op = CodexCliEditOperator(
+                codex_bin=str(fake),
+                profile=None,
+                path="solution.py",
+                samples=1,
+                timeout_seconds=0.1,
+            )
+            self.assertEqual(op.propose(task, parent, __import__("random").Random(0)), [])
+
     def test_prefixed_json_extraction(self):
         parsed = extract_prefixed_json('noise\nOPEN_EVOLVE_X {"a": 1}\n', "OPEN_EVOLVE_X ")
         self.assertEqual(parsed, {"a": 1})

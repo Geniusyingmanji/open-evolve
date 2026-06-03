@@ -257,14 +257,28 @@ class CodexCliEditOperator(Operator):
                 prompt,
             ]
         )
-        proc = subprocess.run(
-            cmd,
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            timeout=self.timeout_seconds,
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = self._process_text(exc.stdout)
+            stderr = self._process_text(exc.stderr)
+            stderr = (stderr + "\n" if stderr else "") + "Codex CLI timed out after %.1f seconds." % self.timeout_seconds
+            return "", stdout, stderr, 124
         return self._last_agent_message(proc.stdout), proc.stdout, proc.stderr, proc.returncode
+
+    @staticmethod
+    def _process_text(value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value)
 
     @staticmethod
     def _last_agent_message(stdout: str) -> str:
@@ -321,6 +335,9 @@ class CodexCliEditOperator(Operator):
             "- {path}: the candidate source file to edit in place\n"
             "- TASK_CONTEXT.md: benchmark context and constraints\n"
             "- EVAL_FEEDBACK.json: latest evaluation score and metrics\n\n"
+            "Use only files in the current working directory. TASK_CONTEXT.md already contains the "
+            "benchmark docs and constraints needed for this edit. Do not search or read paths outside "
+            "the working directory, and do not run commands such as `find /`, `grep -R /`, or `locate`.\n\n"
             "Task id: {task_id}\n"
             "Benchmark family: {family}\n"
             "Objective: {objective}\n"
